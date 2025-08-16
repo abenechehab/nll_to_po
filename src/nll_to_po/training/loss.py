@@ -50,65 +50,18 @@ class NLL(LossFunction):
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
         }
+        for idx in range(std.shape[-1]):
+            if policy.fixed_logstd:
+                metrics[f"std_{idx}"] = std[idx].mean().item()
+            else:
+                metrics[f"std_{idx}"] = std[:, idx].mean().item()
         return -dist.log_prob(y).mean(), metrics
 
 
-class PO(LossFunction):
-    """Policy optimization loss with configurable reward transformation"""
-
-    name = "PO"
-
-    def __init__(
-        self,
-        reward_fn: R.RewardFunction,
-        n_generations: int = 5,
-        use_rsample: bool = False,
-        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
-        rbf_gamma: Optional[float] = None,
-    ):
-        self.n_generations = n_generations
-        self.use_rsample = use_rsample
-        self.reward_transform = reward_transform
-        self.rbf_gamma = rbf_gamma
-        self.reward_fn = reward_fn
-
-    def _transform_rewards(self, rewards):
-        """Apply reward transformation"""
-        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
-            return torch.exp(self.rbf_gamma * rewards)
-        elif self.reward_transform == "normalize":
-            rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
-            return rewards - rewards_min
-        else:  # "none"
-            return rewards
-
-    def compute_loss(self, policy, X, y):
-        mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
-
-        if self.use_rsample:
-            samples = dist.rsample((self.n_generations,))
-            rewards = self.reward_fn(y_hat=samples, y=y)
-            rewards = self._transform_rewards(rewards)
-            loss = -rewards.mean()
-        else:
-            samples = dist.sample((self.n_generations,))
-            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
-            rewards = self.reward_fn(y_hat=samples, y=y)
-            rewards = self._transform_rewards(rewards)
-            loss = (neg_log_prob * rewards).mean()
-        metrics = {
-            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
-            "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
-        }
-        return loss, metrics
-
-
-class PO_Entropy(LossFunction):
+class PG(LossFunction):
     """Policy optimization loss with configurable reward and entropy regularization"""
 
-    name = "PO_Entropy"
+    name = "PG"
 
     def __init__(
         self,
@@ -125,6 +78,7 @@ class PO_Entropy(LossFunction):
         self.rbf_gamma = rbf_gamma
         self.entropy_weight = entropy_weight
         self.reward_fn = reward_fn
+        self.name = f"{self.name}(lam={self.entropy_weight})_{self.reward_fn.name}"
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
@@ -152,7 +106,7 @@ class PO_Entropy(LossFunction):
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
 
-        loss += self.entropy_weight * dist.entropy().mean()
+        loss -= self.entropy_weight * dist.entropy().mean()
 
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
@@ -160,4 +114,9 @@ class PO_Entropy(LossFunction):
             "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
             "entropy": dist.entropy().mean().item(),
         }
+        for idx in range(std.shape[-1]):
+            if policy.fixed_logstd:
+                metrics[f"std_{idx}"] = std[idx].mean().item()
+            else:
+                metrics[f"std_{idx}"] = std[:, idx].mean().item()
         return loss, metrics
