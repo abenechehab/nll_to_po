@@ -40,3 +40,33 @@ class MLPPolicy(nn.Module):
         log_std = self.log_std(common) if not self.fixed_logstd else self.log_std
         std = torch.exp(log_std)
         return mean, std
+
+
+class LinearGaussian(nn.Module):
+    """Linear Gaussian policy."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        fixed_logstd: bool = False,
+    ):
+        super().__init__()
+
+        self.mean = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+        )
+        if fixed_logstd:
+            self.log_std = nn.Parameter(torch.zeros(output_dim))
+        else:
+            self.log_std = nn.Sequential(
+                nn.Linear(input_dim, output_dim),
+            )
+        self.fixed_logstd = fixed_logstd
+
+    def forward(self, state):
+        """Forward pass to compute mean and standard deviation."""
+        mean = self.mean(state)
+        log_std = self.log_std(state) if not self.fixed_logstd else self.log_std
+        std = torch.exp(log_std)
+        return mean, std
