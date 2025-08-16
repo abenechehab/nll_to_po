@@ -23,9 +23,20 @@ class Mahalanobis(RewardFunction):
 
     def __init__(self, matrix: torch.Tensor):
         self.matrix = matrix
+        self.name = f"{self.name}({self.matrix[0, 0]:.2f})"
 
     def __call__(self, y_hat, y):
         y_hat = torch.squeeze(y_hat)
         y = torch.squeeze(y)
         diff = y_hat - y
-        return -torch.einsum("gbi,ij,gbj->gb", diff, self.matrix, diff)
+
+        if diff.dim() == 3:
+            # Handle 3D case: (batch, group, features)
+            return -torch.einsum("gbi,ij,gbj->gb", diff, self.matrix, diff)
+        elif diff.dim() == 2:
+            # Handle 2D case: (batch, features)
+            return -torch.einsum("bi,ij,bj->b", diff, self.matrix, diff)
+        else:
+            raise ValueError(
+                f"Expected diff to have 2 or 3 dimensions, got {diff.dim()}"
+            )
