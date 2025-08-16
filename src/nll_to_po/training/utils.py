@@ -51,15 +51,33 @@ def train_single_policy(
     wandb_run=None,
     tensorboard_writer: Optional[SummaryWriter] = None,
     logger: Optional[logging.Logger] = None,
+    scheduler_patience: int = 10,
+    early_stopping_patience: int = 20,
+    scheduler_factor: float = 0.5,
+    min_lr: float = 1e-6,
 ):
     """Train a single policy with the specified loss function"""
 
     trained_policy = copy.deepcopy(policy).train()
     optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
 
+    # Add scheduler for learning rate reduction on plateau
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=scheduler_factor,
+        patience=scheduler_patience,
+        min_lr=min_lr,
+    )
+
     # Initialize metric tracking dictionaries
     train_metrics_history = {}
     val_metrics_history = {}
+
+    # Early stopping variables
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    early_stopped = False
 
     # Training loop
     if logger is not None:
@@ -110,11 +128,15 @@ def train_single_policy(
         if wandb_run is not None:
             wandb_metrics = {f"train/{k}": v for k, v in scalar_metrics.items()}
             wandb_metrics["epoch"] = epoch
+            wandb_metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
             wandb_run.log(wandb_metrics)
 
         if tensorboard_writer is not None:
             for k, v in scalar_metrics.items():
                 tensorboard_writer.add_scalar(f"train/{k}", v, epoch)
+            tensorboard_writer.add_scalar(
+                "learning_rate", optimizer.param_groups[0]["lr"], epoch
+            )
 
         # Validation phase
         if val_dataloader is not None:
@@ -151,6 +173,28 @@ def train_single_policy(
             if tensorboard_writer is not None:
                 for k, v in val_scalar_metrics.items():
                     tensorboard_writer.add_scalar(f"val/{k}", v, epoch)
+
+            # Update scheduler with validation loss
+            scheduler.step(avg_val_loss)
+
+            # Early stopping check
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
+            if epochs_without_improvement >= early_stopping_patience:
+                if logger is not None:
+                    logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                early_stopped = True
+                break
+        else:
+            # If no validation data, use training loss for scheduler
+            scheduler.step(avg_loss)
+
+    if logger is not None and not early_stopped:
+        logger.info(f"Training completed after {n_updates} epochs")
 
     return trained_policy, train_metrics_history, val_metrics_history
 
