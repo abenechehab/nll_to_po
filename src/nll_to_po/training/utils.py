@@ -30,8 +30,10 @@ import copy
 from datetime import datetime
 import logging
 import os
+import random
 from typing import Optional
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -138,6 +140,7 @@ def train_single_policy(
                 "learning_rate", optimizer.param_groups[0]["lr"], epoch
             )
 
+        scheduler_and_early_stopping_loss = avg_loss
         # Validation phase
         if val_dataloader is not None:
             trained_policy.eval()
@@ -174,24 +177,23 @@ def train_single_policy(
                 for k, v in val_scalar_metrics.items():
                     tensorboard_writer.add_scalar(f"val/{k}", v, epoch)
 
-            # Update scheduler with validation loss
-            scheduler.step(avg_val_loss)
+            scheduler_and_early_stopping_loss = avg_val_loss
 
-            # Early stopping check
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                epochs_without_improvement = 0
-            else:
-                epochs_without_improvement += 1
+        # If no validation data, use training loss for scheduler
+        scheduler.step(scheduler_and_early_stopping_loss)
 
-            if epochs_without_improvement >= early_stopping_patience:
-                if logger is not None:
-                    logger.info(f"Early stopping triggered after {epoch + 1} epochs")
-                early_stopped = True
-                break
+        # Early stopping check
+        if scheduler_and_early_stopping_loss < best_val_loss:
+            best_val_loss = scheduler_and_early_stopping_loss
+            epochs_without_improvement = 0
         else:
-            # If no validation data, use training loss for scheduler
-            scheduler.step(avg_loss)
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= early_stopping_patience:
+            if logger is not None:
+                logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+            early_stopped = True
+            break
 
     if logger is not None and not early_stopped:
         logger.info(f"Training completed after {n_updates} epochs")
@@ -255,3 +257,12 @@ def setup_logger(
             )
 
     return root, run_dir, writer
+
+
+def set_seed_everywhere(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
