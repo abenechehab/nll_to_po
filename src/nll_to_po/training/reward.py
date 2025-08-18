@@ -23,7 +23,9 @@ class Mahalanobis(RewardFunction):
 
     def __init__(self, matrix: torch.Tensor):
         self.matrix = matrix
-        self.name = f"{self.name}({self.matrix[0, 0]:.2f})"
+        first_diag_element = self.matrix[0, 0]
+        desc = r"$I$" if first_diag_element == 1.0 else r"$\frac{\lambda}{\beta^2}I$"
+        self.name = f"{self.name}({desc})"
 
     def __call__(self, y_hat, y):
         y_hat = torch.squeeze(y_hat)
