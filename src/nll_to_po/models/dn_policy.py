@@ -2,7 +2,7 @@
 #test
 import torch
 import torch.nn as nn
-
+import torch.functional as F 
 
 class MLPPolicy(nn.Module):
     """Multi-layer perceptron policy model with configurable architecture."""
@@ -79,7 +79,7 @@ class MLPPolicy_Full_Cov(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_sizes):
         super().__init__()
         self.output_dim = output_dim
-
+        #tips pour eviter de ralculer les indices a chaque forward. 
         self.register_buffer("tril_idx", torch.tril_indices(output_dim, output_dim, 0))
         self.register_buffer("diag_index", torch.arange(output_dim))
 
