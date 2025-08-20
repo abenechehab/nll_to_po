@@ -23,7 +23,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ['ruff', 'pre-commit', 'black', 'detect-secrets']
-mbrl = ['minari[h5py]']
+mbrl = ['minari[h5py]', 'ray[default]', 'pyarrow']
 
 [tool.setuptools]
 license-files = ['LICEN[CS]E*', 'COPYING*', 'NOTICE*', 'AUTHORS*']
