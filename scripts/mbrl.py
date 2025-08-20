@@ -89,7 +89,7 @@ def generate_data_minari(
     seed = np.random.randint(0, 1_000_000)
     set_seed_everywhere(seed=int(seed))
 
-    dataset = minari.load_dataset(dataset_name)
+    dataset = minari.load_dataset(dataset_name, download=True)
     dataset.set_seed(seed=int(seed))
 
     observations = []
