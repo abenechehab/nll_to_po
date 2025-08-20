@@ -45,11 +45,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 def train_single_policy(
     policy: MLPPolicy,
-    train_dataloader: torch.utils.data.DataLoader,
     loss_function: L.LossFunction,
+    train_dataloader: torch.utils.data.DataLoader,
+    val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     n_updates: int = 1,
     learning_rate: float = 0.001,
-    val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     wandb_run=None,
     tensorboard_writer: Optional[SummaryWriter] = None,
     logger: Optional[logging.Logger] = None,
@@ -57,10 +57,11 @@ def train_single_policy(
     early_stopping_patience: int = 20,
     scheduler_factor: float = 0.5,
     min_lr: float = 1e-6,
+    device: torch.device = torch.device("cpu"),
 ):
     """Train a single policy with the specified loss function"""
 
-    trained_policy = copy.deepcopy(policy).train()
+    trained_policy = copy.deepcopy(policy).train().to(device)
     optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
 
     # Add scheduler for learning rate reduction on plateau
@@ -92,6 +93,7 @@ def train_single_policy(
 
         batch_count = 0
         for X, y in train_dataloader:
+            X, y = X.to(device), y.to(device)
             loss, metrics = loss_function.compute_loss(trained_policy, X, y)
 
             optimizer.zero_grad()
@@ -149,6 +151,7 @@ def train_single_policy(
 
             with torch.no_grad():
                 for X, y in val_dataloader:
+                    X, y = X.to(device), y.to(device)
                     val_loss, metrics = loss_function.compute_loss(trained_policy, X, y)
                     val_epoch_loss += val_loss.item()
                     val_batch_count += 1
