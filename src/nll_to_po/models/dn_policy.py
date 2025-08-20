@@ -1,8 +1,10 @@
 """Basic density network policy model."""
-#test
+
+# test
 import torch
 import torch.nn as nn
-import torch.functional as F 
+import torch.functional as F
+
 
 class MLPPolicy(nn.Module):
     """Multi-layer perceptron policy model with configurable architecture."""
@@ -72,20 +74,22 @@ class LinearGaussian(nn.Module):
         return mean, std
 
 
-###MLP plolicy for the non iid multivariate case :)
+### MLP policy for the non iid multivariate case :)
+
 
 class MLPPolicy_Full_Cov(nn.Module):
     """Sigma = L L^T avec L triangulaire inférieure prédite par le réseau."""
+
     def __init__(self, input_dim, output_dim, hidden_sizes):
         super().__init__()
         self.output_dim = output_dim
-        #tips pour eviter de ralculer les indices a chaque forward. 
+        # tips pour eviter de ralculer les indices a chaque forward.
         self.register_buffer("tril_idx", torch.tril_indices(output_dim, output_dim, 0))
         self.register_buffer("diag_index", torch.arange(output_dim))
 
         layers, dims = [], [input_dim] + hidden_sizes
         for i in range(len(dims) - 1):
-            layers += [nn.Linear(dims[i], dims[i+1]), nn.Tanh()]
+            layers += [nn.Linear(dims[i], dims[i + 1]), nn.Tanh()]
         self.net = nn.Sequential(*layers)
 
         # têtes
@@ -93,10 +97,10 @@ class MLPPolicy_Full_Cov(nn.Module):
         n_tril = output_dim * (output_dim + 1) // 2
         self.tril_layer = nn.Linear(dims[-1], n_tril)
 
-        #hyperparams de stabilité
+        # hyperparams de stabilité
         self.min_std = 1e-3
         self.max_std = 1e3
-        self.jitter  = 1e-6
+        self.jitter = 1e-6
 
     def forward(self, x):
         h = self.net(x)
@@ -105,12 +109,14 @@ class MLPPolicy_Full_Cov(nn.Module):
         B, D = x.shape[0], self.output_dim
         scale_tril = h.new_zeros(B, D, D)
 
-        tril_params = self.tril_layer(h)                     
+        tril_params = self.tril_layer(h)
         scale_tril[:, self.tril_idx[0], self.tril_idx[1]] = tril_params
 
-        d = scale_tril[:, self.diag_index, self.diag_index]  #(B, D)
-        d = F.softplus(d)                     #softplus au lieu de exp pour eviter que les valeurs explosent 
-        d = d.clamp(max=self.max_std) #je clamp sinon la nll explose 
+        d = scale_tril[:, self.diag_index, self.diag_index]  # (B, D)
+        d = F.softplus(
+            d
+        )  # softplus au lieu de exp pour eviter que les valeurs explosent
+        d = d.clamp(max=self.max_std)  # je clamp sinon la nll explose
         scale_tril[:, self.diag_index, self.diag_index] = d
 
         eye = torch.eye(D, device=x.device, dtype=scale_tril.dtype).unsqueeze(0)
