@@ -48,6 +48,7 @@ def train_single_policy(
     loss_function: L.LossFunction,
     train_dataloader: torch.utils.data.DataLoader,
     val_dataloader: Optional[torch.utils.data.DataLoader] = None,
+    test_dataloader: Optional[torch.utils.data.DataLoader] = None,
     n_updates: int = 1,
     learning_rate: float = 0.001,
     wandb_run=None,
@@ -76,11 +77,11 @@ def train_single_policy(
     # Initialize metric tracking dictionaries
     train_metrics_history = {}
     val_metrics_history = {}
+    test_metrics_history = {}
 
     # Early stopping variables
     best_val_loss = float("inf")
     epochs_without_improvement = 0
-    early_stopped = False
 
     # Training loop
     if logger is not None:
@@ -195,13 +196,51 @@ def train_single_policy(
         if epochs_without_improvement >= early_stopping_patience:
             if logger is not None:
                 logger.info(f"Early stopping triggered after {epoch + 1} epochs")
-            early_stopped = True
             break
 
-    if logger is not None and not early_stopped:
-        logger.info(f"Training completed after {n_updates} epochs")
+    if logger is not None:
+        logger.info(f"Training completed after {epoch + 1} epochs")
 
-    return trained_policy, train_metrics_history, val_metrics_history
+    if wandb_run is not None:
+        wandb_run.finish()
+
+    # Test
+    if test_dataloader is not None:
+        trained_policy.eval()
+        test_epoch_loss = 0
+        test_batch_count = 0
+
+        with torch.no_grad():
+            for X, y in test_dataloader:
+                X, y = X.to(device), y.to(device)
+                test_loss, metrics = loss_function.compute_loss(trained_policy, X, y)
+                test_epoch_loss += test_loss.item()
+                test_batch_count += 1
+
+        avg_test_loss = test_epoch_loss / test_batch_count
+
+        # Track test metrics
+        test_scalar_metrics = {
+            k: v for k, v in metrics.items() if isinstance(v, (int, float))
+        }
+        test_scalar_metrics["loss"] = avg_test_loss
+
+        # Add to test metrics history
+        for k, v in test_scalar_metrics.items():
+            if k not in test_metrics_history:
+                test_metrics_history[k] = []
+            test_metrics_history[k].append(v)
+
+        if tensorboard_writer is not None:
+            for k, v in test_scalar_metrics.items():
+                tensorboard_writer.add_scalar(f"test/{k}", v, epoch + 1)
+
+    return (
+        trained_policy,
+        train_metrics_history,
+        val_metrics_history,
+        test_metrics_history,
+    )
 
 
 def setup_logger(
