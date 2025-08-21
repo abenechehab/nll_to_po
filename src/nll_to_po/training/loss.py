@@ -50,11 +50,12 @@ class NLL(LossFunction):
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
         }
-        for idx in range(std.shape[-1]):
-            if policy.fixed_logstd:
-                metrics[f"std_{idx}"] = std[idx].mean().item()
-            else:
-                metrics[f"std_{idx}"] = std[:, idx].mean().item()
+        if std.shape[-1] == 2:
+            for idx in range(std.shape[-1]):
+                if policy.fixed_logstd:
+                    metrics[f"std_{idx}"] = std[idx].mean().item()
+                else:
+                    metrics[f"std_{idx}"] = std[:, idx].mean().item()
         return -dist.log_prob(y).mean(), metrics
 
 
@@ -114,11 +115,12 @@ class PG(LossFunction):
             "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
             "entropy": dist.entropy().mean().item(),
         }
-        for idx in range(std.shape[-1]):
-            if policy.fixed_logstd:
-                metrics[f"std_{idx}"] = std[idx].mean().item()
-            else:
-                metrics[f"std_{idx}"] = std[:, idx].mean().item()
+        if std.shape[-1] == 2:
+            for idx in range(std.shape[-1]):
+                if policy.fixed_logstd:
+                    metrics[f"std_{idx}"] = std[idx].mean().item()
+                else:
+                    metrics[f"std_{idx}"] = std[:, idx].mean().item()
         return loss, metrics
 
 
