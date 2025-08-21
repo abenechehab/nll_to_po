@@ -25,7 +25,9 @@ class Mahalanobis(RewardFunction):
         self.matrix = matrix
         first_diag_element = self.matrix[0, 0]
         desc = (
-            r"$I$" if first_diag_element == 1.0 else r"$\frac{\lambda n}{Tr(\Sigma)}I$"
+            r"$I$"
+            if first_diag_element == 1.0
+            else r"$\frac{\lambda n}{2 Tr(\Sigma)}I$"
         )
         self.name = f"{self.name}({desc})"
 
