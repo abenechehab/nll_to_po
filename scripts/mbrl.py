@@ -37,12 +37,15 @@ from nll_to_po.training.utils import (
     set_seed_everywhere,
 )
 
+os.environ["RAY_TMPDIR"] = "/tmp/ray_logs_mbrl"
+
 
 @dataclass
 class ExperimentConfig:
     # Data args
     dataset: str = "mujoco/halfcheetah/medium-v0"
-    train_size: float = 0.7
+    train_size: float = 0.6
+    test_size: float = 0.2
     data_proportion: float = 0.1
     batch_size: int = -1
 
@@ -70,22 +73,26 @@ class ExperimentConfig:
     merge_results: bool = True
 
 
-# Reduce noisy logs
-logger = logging.getLogger("wandb")
-logger.setLevel(logging.ERROR)
-os.environ["WANDB_SILENT"] = "true"
-
-
 def generate_data_minari(
     dataset_name: str,
     train_size: float = 0.8,
     data_proportion: float = 1.0,
     batch_size: int = -1,
-) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader, Dict[str, int]]:
-    """Create train/val DataLoaders from a Minari dataset.
+    test_size: float = 0.1,
+) -> Tuple[
+    torch.utils.data.DataLoader,
+    torch.utils.data.DataLoader,
+    torch.utils.data.DataLoader,
+    Dict[str, int],
+]:
+    """Create train/val/test DataLoaders from a Minari dataset.
 
-    Returns: (train_loader, val_loader, {input_dim, output_dim})
+    Returns: (train_loader, val_loader, test_loader, {input_dim, output_dim})
     """
+    assert train_size + test_size <= 1.0, (
+        "train_size + test_size must be <= 1.0 (for validation)"
+    )
+
     seed = np.random.randint(0, 1_000_000)
     set_seed_everywhere(seed=int(seed))
 
@@ -120,10 +127,21 @@ def generate_data_minari(
     X = X[selected_indices]
     y = y[selected_indices]
 
-    # Train/val split
+    # Train/val/test split
     trn_size = int(len(X) * train_size)
-    X_train, X_val = X[:trn_size], X[trn_size:]
-    y_train, y_val = y[:trn_size], y[trn_size:]
+    test_size_actual = int(len(X) * test_size)
+    val_size = len(X) - trn_size - test_size_actual
+
+    X_train, X_val, X_test = (
+        X[:trn_size],
+        X[trn_size : trn_size + val_size],
+        X[trn_size + val_size :],
+    )
+    y_train, y_val, y_test = (
+        y[:trn_size],
+        y[trn_size : trn_size + val_size],
+        y[trn_size + val_size :],
+    )
 
     if batch_size < 1:
         batch_size = X_train.shape[0]
@@ -136,11 +154,23 @@ def generate_data_minari(
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False
     )
+    test_dataset = torch.utils.data.TensorDataset(X_test, y_test)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False
+    )
 
     return (
         train_loader,
         val_loader,
-        {"input_dim": obs_dim + action_dim, "output_dim": obs_dim},
+        test_loader,
+        {
+            "input_dim": obs_dim + action_dim,
+            "output_dim": obs_dim,
+            "dataset_name": "_".join(dataset_name.split("/")),
+            "train_size": train_size,
+            "data_proportion": data_proportion,
+            "batch_size": batch_size,
+        },
     )
 
 
@@ -182,10 +212,10 @@ def df_from_metrics(
 @ray.remote(num_gpus=0.1)
 def run_experiment_task(
     *,
-    dataset_name: str,
-    train_size: float,
-    data_proportion: float,
-    batch_size: int,
+    train_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader,
+    test_loader: torch.utils.data.DataLoader,
+    data_cfg: Dict,
     hidden_sizes: List[int],
     fixed_logstd: bool,
     n_updates: int,
@@ -202,14 +232,6 @@ def run_experiment_task(
     """Single experiment worker: builds data, policy, loss; trains; saves Parquet; returns metadata."""
     # Device chosen by Ray via CUDA_VISIBLE_DEVICES
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Prepare data
-    train_loader, val_loader, data_cfg = generate_data_minari(
-        dataset_name=dataset_name,
-        train_size=train_size,
-        data_proportion=data_proportion,
-        batch_size=batch_size,
-    )
 
     # Build policy fresh per run
     policy = build_policy(
@@ -233,7 +255,7 @@ def run_experiment_task(
         elif loss_cfg["U_type"] == "scaled":
             scale_val = float(loss_cfg["U_scale"])
             U = scale_val * torch.eye(data_cfg["output_dim"]).to(device)
-            U_label = r"PG($U=\frac{\lambda n}{Tr(\Sigma)}I$)"
+            U_label = r"PG($U=\frac{\lambda n}{2 Tr(\Sigma)}I$)"
         else:
             raise ValueError(f"Unknown U_type: {loss_cfg['U_type']}")
 
@@ -259,16 +281,14 @@ def run_experiment_task(
 
     # Config metadata for DF
     run_cfg = {
-        "dataset_name": dataset_name,
-        "train_size": train_size,
-        "data_proportion": data_proportion,
-        "batch_size": batch_size,
         "hidden_sizes": json.dumps(hidden_sizes),
         "fixed_logstd": fixed_logstd,
         "learning_rate": learning_rate,
         "n_updates": n_updates,
         "loss_type": loss_fn.name,
     }
+    # Add config from data_cfg
+    run_cfg.update(data_cfg)
     # Add PG-specific labels (optional columns may be missing for MSE/NLL)
     if loss_type == "PG":
         run_cfg.update(
@@ -287,13 +307,19 @@ def run_experiment_task(
     if use_wandb:
         import wandb  # local import to avoid hard dep when unused
 
+        # Reduce noisy logs
+        logger = logging.getLogger("wandb")
+        logger.setLevel(logging.ERROR)
+        os.environ["WANDB_SILENT"] = "true"
+
         wandb_run = wandb.init(project=wandb_project, config=run_cfg)
 
     # Train
-    _, train_metrics, val_metrics = train_single_policy(
+    _, train_metrics, val_metrics, test_metrics = train_single_policy(
         policy=policy,
         train_dataloader=train_loader,
         val_dataloader=val_loader,
+        test_dataloader=test_loader,
         loss_function=loss_fn,
         n_updates=n_updates,
         learning_rate=learning_rate,
@@ -304,13 +330,11 @@ def run_experiment_task(
         early_stopping_patience=early_stopping_patience,
     )
 
-    if use_wandb and wandb_run is not None:
-        wandb_run.finish()
-
     # Build DataFrames
     df_list: List[pd.DataFrame] = []
     df_list.append(df_from_metrics(train_metrics, run_cfg, exp_idx, "train"))
     df_list.append(df_from_metrics(val_metrics, run_cfg, exp_idx, "val"))
+    df_list.append(df_from_metrics(test_metrics, run_cfg, exp_idx, "test"))
     df = pd.concat(df_list, ignore_index=True)
 
     # Persist parquet (efficient)
@@ -333,14 +357,16 @@ def main(args: ExperimentConfig):
         address=args.ray_address, ignore_reinit_error=True, include_dashboard=False
     )
 
-    # Prepare a single data pass to compute trace_sigma and dims for PG scaling
-    train_loader_probe, _, data_cfg_probe = generate_data_minari(
+    # Prepare data
+    train_loader, val_loader, test_loader, data_cfg = generate_data_minari(
         dataset_name=args.dataset,
         train_size=args.train_size,
+        test_size=args.test_size,
         data_proportion=args.data_proportion,
         batch_size=args.batch_size,
     )
-    trace_sigma = estimate_trace_sigma(train_loader_probe)
+    # Estimate data covariance
+    trace_sigma = estimate_trace_sigma(train_loader)
 
     # Build tasks
     tasks = []
@@ -350,10 +376,10 @@ def main(args: ExperimentConfig):
     # Helper to enqueue a task
     def enqueue(loss_cfg: Dict, exp_idx: int):
         task = run_experiment_task.remote(
-            dataset_name=args.dataset,
-            train_size=args.train_size,
-            data_proportion=args.data_proportion,
-            batch_size=args.batch_size,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            data_cfg=data_cfg,
             hidden_sizes=args.hidden_sizes,
             fixed_logstd=args.fixed_logstd,
             n_updates=args.n_updates,
@@ -376,7 +402,7 @@ def main(args: ExperimentConfig):
         enqueue({"type": "NLL"}, exp_idx)
 
     # Enqueue PG variants
-    n = data_cfg_probe["output_dim"]
+    n = data_cfg["output_dim"]
     for exp_idx in range(args.n_experiments):
         for entropy_weight in args.entropy_weights:
             for U_choice in ["I", "scaled"]:
@@ -413,7 +439,9 @@ def main(args: ExperimentConfig):
                 print(f"Warning: failed to read {r['parquet_path']}: {e}")
         if frames:
             merged = pd.concat(frames, ignore_index=True)
-            merged_path = os.path.join(parquet_dir, "results_all.parquet")
+            merged_path = os.path.join(
+                parquet_dir, f"results_all_{'_'.join(args.dataset.split('/'))}.parquet"
+            )
             merged.to_parquet(merged_path, index=False, compression="zstd")
             print(f"Saved merged results to {merged_path}")
 
