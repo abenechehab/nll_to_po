@@ -37,8 +37,6 @@ from nll_to_po.training.utils import (
     set_seed_everywhere,
 )
 
-os.environ["RAY_TMPDIR"] = "/tmp/ray_logs_mbrl"
-
 
 @dataclass
 class ExperimentConfig:
@@ -143,20 +141,23 @@ def generate_data_minari(
         y[trn_size + val_size :],
     )
 
-    if batch_size < 1:
-        batch_size = X_train.shape[0]
-
     train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True
+        train_dataset,
+        batch_size=batch_size if batch_size > 0 else X_train.shape[0],
+        shuffle=True,
     )
     val_dataset = torch.utils.data.TensorDataset(X_val, y_val)
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False
+        val_dataset,
+        batch_size=batch_size if batch_size > 0 else X_val.shape[0],
+        shuffle=False,
     )
     test_dataset = torch.utils.data.TensorDataset(X_test, y_test)
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False
+        test_dataset,
+        batch_size=batch_size if batch_size > 0 else X_test.shape[0],
+        shuffle=False,
     )
 
     return (
@@ -354,7 +355,10 @@ def run_experiment_task(
 def main(args: ExperimentConfig):
     # Ensure Ray initialized
     ray.init(
-        address=args.ray_address, ignore_reinit_error=True, include_dashboard=False
+        address=args.ray_address,
+        ignore_reinit_error=True,
+        include_dashboard=False,
+        _temp_dir=os.path.abspath("logs/ray/"),
     )
 
     # Prepare data
@@ -417,7 +421,7 @@ def main(args: ExperimentConfig):
                 if U_choice == "scaled":
                     # scaled factor = (lambda * n) / trace_sigma
                     U_scale = (float(entropy_weight) * float(n)) / max(
-                        trace_sigma, 1e-12
+                        2 * trace_sigma, 1e-12
                     )
                     loss_cfg["U_scale"] = U_scale
                 enqueue(loss_cfg, exp_idx)
@@ -442,6 +446,11 @@ def main(args: ExperimentConfig):
             merged_path = os.path.join(
                 parquet_dir, f"results_all_{'_'.join(args.dataset.split('/'))}.parquet"
             )
+            # Check if merged file already exists
+            if os.path.exists(merged_path):
+                existing_df = pd.read_parquet(merged_path)
+                # Concatenate with existing data
+                merged = pd.concat([existing_df, merged], ignore_index=True)
             merged.to_parquet(merged_path, index=False, compression="zstd")
             print(f"Saved merged results to {merged_path}")
 
