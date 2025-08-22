@@ -93,9 +93,12 @@ def train_single_policy(
         epoch_grad_norm = 0
 
         batch_count = 0
-        for X, y in train_dataloader:
-            X, y = X.to(device), y.to(device)
-            loss, metrics = loss_function.compute_loss(trained_policy, X, y)
+
+        # Initialize accumulators for scalar metrics
+        accumulated_metrics = {}
+        for X, y, mu in train_dataloader:
+            X, y, mu = X.to(device), y.to(device), mu.to(device)
+            loss, metrics = loss_function.compute_loss(trained_policy, X, y, mu)
 
             optimizer.zero_grad()
             loss.backward()
@@ -111,17 +114,21 @@ def train_single_policy(
             epoch_loss += loss.item()
             epoch_grad_norm += grad_norm.item()
 
+            # Accumulate scalar metrics across batches
+            for k, v in metrics.items():
+                if isinstance(v, (int, float)):
+                    if k not in accumulated_metrics:
+                        accumulated_metrics[k] = 0
+                    accumulated_metrics[k] += v
+
             batch_count += 1
 
         # Store averaged training metrics
         avg_loss = epoch_loss / batch_count
         avg_grad_norm = epoch_grad_norm / batch_count
 
-        # Track training metrics
-        scalar_metrics = {
-            k: v for k, v in metrics.items() if isinstance(v, (int, float))
-        }
-        scalar_metrics["loss"] = avg_loss
+        # Average accumulated scalar metrics across batches
+        scalar_metrics = {k: v / batch_count for k, v in accumulated_metrics.items()}
         scalar_metrics["grad_norm"] = avg_grad_norm
 
         # Add to training metrics history
@@ -151,9 +158,11 @@ def train_single_policy(
             val_batch_count = 0
 
             with torch.no_grad():
-                for X, y in val_dataloader:
-                    X, y = X.to(device), y.to(device)
-                    val_loss, metrics = loss_function.compute_loss(trained_policy, X, y)
+                for X, y, mu in val_dataloader:
+                    X, y, mu = X.to(device), y.to(device), mu.to(device)
+                    val_loss, metrics = loss_function.compute_loss(
+                        trained_policy, X, y, mu
+                    )
                     val_epoch_loss += val_loss.item()
                     val_batch_count += 1
 
@@ -163,7 +172,6 @@ def train_single_policy(
             val_scalar_metrics = {
                 k: v for k, v in metrics.items() if isinstance(v, (int, float))
             }
-            val_scalar_metrics["loss"] = avg_val_loss
 
             # Add to validation metrics history
             for k, v in val_scalar_metrics.items():
@@ -211,19 +219,18 @@ def train_single_policy(
         test_batch_count = 0
 
         with torch.no_grad():
-            for X, y in test_dataloader:
-                X, y = X.to(device), y.to(device)
-                test_loss, metrics = loss_function.compute_loss(trained_policy, X, y)
+            for X, y, mu in test_dataloader:
+                X, y, mu = X.to(device), y.to(device), mu.to(device)
+                test_loss, metrics = loss_function.compute_loss(
+                    trained_policy, X, y, mu
+                )
                 test_epoch_loss += test_loss.item()
                 test_batch_count += 1
-
-        avg_test_loss = test_epoch_loss / test_batch_count
 
         # Track test metrics
         test_scalar_metrics = {
             k: v for k, v in metrics.items() if isinstance(v, (int, float))
         }
-        test_scalar_metrics["loss"] = avg_test_loss
 
         # Add to test metrics history
         for k, v in test_scalar_metrics.items():
