@@ -6,6 +6,7 @@ from typing import Optional, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
+import torch.distributions as D
 
 import nll_to_po.training.reward as R
 
@@ -20,7 +21,7 @@ class LossFunction(ABC):
 
     @abstractmethod
     def compute_loss(
-        self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor
+        self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor, mu: torch.Tensor
     ) -> tuple[torch.Tensor, dict]:
         """Compute the loss given policy, inputs X, and targets y"""
         pass
@@ -31,10 +32,13 @@ class MSE(LossFunction):
 
     name = "MSE"
 
-    def compute_loss(self, policy, X, y):
+    def compute_loss(self, policy, X, y, mu):
         mean, _ = policy(X)
         loss = nn.MSELoss()(mean, y)
-        return loss, {"mean_error": loss.item()}
+        return loss, {
+            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
+            "loss": loss.item(),
+        }
 
 
 class NLL(LossFunction):
@@ -42,13 +46,16 @@ class NLL(LossFunction):
 
     name = "NLL"
 
-    def compute_loss(self, policy, X, y):
+    def compute_loss(self, policy, X, y, mu):
         mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
+        dist = D.Normal(mean, std)
+        nll = -dist.log_prob(y).mean()
         metrics = {
-            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
-            "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
+            "NLL": nll.item(),
+            "dist": D.Normal(mean[0].clone(), std[0].clone()),
+            "loss": nll.item(),
+            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
         }
         if std.shape[-1] == 2:
             for idx in range(std.shape[-1]):
@@ -56,7 +63,7 @@ class NLL(LossFunction):
                     metrics[f"std_{idx}"] = std[idx].mean().item()
                 else:
                     metrics[f"std_{idx}"] = std[:, idx].mean().item()
-        return -dist.log_prob(y).mean(), metrics
+        return nll, metrics
 
 
 class PG(LossFunction):
@@ -91,9 +98,9 @@ class PG(LossFunction):
         else:  # "none"
             return rewards
 
-    def compute_loss(self, policy, X, y):
+    def compute_loss(self, policy, X, y, mu):
         mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
+        dist = D.Normal(mean, std)
 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
@@ -110,10 +117,13 @@ class PG(LossFunction):
         loss -= self.entropy_weight * dist.entropy().mean()
 
         metrics = {
-            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "dist": D.Normal(mean[0].clone(), std[0].clone()),
             "entropy": dist.entropy().mean().item(),
+            "reward_mean": rewards.mean().item(),
+            "loss": loss.item(),
+            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
         }
         if std.shape[-1] == 2:
             for idx in range(std.shape[-1]):
@@ -143,7 +153,7 @@ class NLL_Full_Cov(LossFunction):
         # std ici c est scale_tril la triangulaire inf c
         mean, std = policy(X)
         # dist = torch.distributions.Normal(mean, std)
-        dist = torch.distributions.MultivariateNormal(
+        dist = D.MultivariateNormal(
             mean, scale_tril=std
         )  # car je considere des matrices pleines
         cholesky_part = torch.linalg.cholesky(self.target_sigma)
@@ -152,9 +162,10 @@ class NLL_Full_Cov(LossFunction):
             "L2_error": torch.norm(mean.mean(dim=0) - self.target_mu, p=2).item(),
             "std_error": torch.norm(std[0] - cholesky_part, p="fro").item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.MultivariateNormal(
+            "dist": D.MultivariateNormal(
                 loc=mean[0].clone(), scale_tril=std[0].clone()
             ),
+            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
         }
         return -dist.log_prob(y).mean(), metrics
 
@@ -197,7 +208,7 @@ class PG_Full_Cov(LossFunction):
     def compute_loss(self, policy, X, y):
         mean, std = policy(X)
         # dist = torch.distributions.Normal(mean, std)
-        dist = torch.distributions.MultivariateNormal(mean, scale_tril=std)
+        dist = D.MultivariateNormal(mean, scale_tril=std)
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
             rewards = self.reward_fn(y_hat=samples, y=y)
@@ -217,9 +228,11 @@ class PG_Full_Cov(LossFunction):
             "L2_error": torch.norm(mean.mean(dim=0) - self.target_mu, p=2).item(),
             "std_error": torch.norm(std[0] - cholesky_lower, p="fro").item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.MultivariateNormal(
+            "dist": D.MultivariateNormal(
                 loc=mean[0].clone(), scale_tril=std[0].clone()
             ),
             "entropy": dist.entropy().mean().item(),
+            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
+            "loss": loss.item(),
         }
         return loss, metrics
