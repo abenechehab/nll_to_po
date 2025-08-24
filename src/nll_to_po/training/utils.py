@@ -59,6 +59,7 @@ def train_single_policy(
     scheduler_factor: float = 0.5,
     min_lr: float = 1e-6,
     device: torch.device = torch.device("cpu"),
+    return_dist: bool = False,
 ):
     """Train a single policy with the specified loss function"""
 
@@ -78,6 +79,7 @@ def train_single_policy(
     train_metrics_history = {}
     val_metrics_history = {}
     test_metrics_history = {}
+    dist = []
 
     # Early stopping variables
     best_val_loss = float("inf")
@@ -96,9 +98,9 @@ def train_single_policy(
 
         # Initialize accumulators for scalar metrics
         accumulated_metrics = {}
-        for X, y, mu in train_dataloader:
-            X, y, mu = X.to(device), y.to(device), mu.to(device)
-            loss, metrics = loss_function.compute_loss(trained_policy, X, y, mu)
+        for X, y, mu, std in train_dataloader:
+            X, y, mu, std = X.to(device), y.to(device), mu.to(device), std.to(device)
+            loss, metrics = loss_function.compute_loss(trained_policy, X, y, mu, std)
 
             optimizer.zero_grad()
             loss.backward()
@@ -122,6 +124,16 @@ def train_single_policy(
                     accumulated_metrics[k] += v
 
             batch_count += 1
+
+            if return_dist:
+                assert len(train_dataloader) == 1, (
+                    "[batch size] we must be in the single data point regime"
+                )
+                assert torch.all(torch.all(X == X[0:1], dim=0)), (
+                    "[input] we must be in the single data point regime"
+                )
+                if "dist" in metrics:
+                    dist.append(metrics["dist"])
 
         # Store averaged training metrics
         avg_loss = epoch_loss / batch_count
@@ -158,10 +170,15 @@ def train_single_policy(
             val_batch_count = 0
 
             with torch.no_grad():
-                for X, y, mu in val_dataloader:
-                    X, y, mu = X.to(device), y.to(device), mu.to(device)
+                for X, y, mu, std in val_dataloader:
+                    X, y, mu, std = (
+                        X.to(device),
+                        y.to(device),
+                        mu.to(device),
+                        std.to(device),
+                    )
                     val_loss, metrics = loss_function.compute_loss(
-                        trained_policy, X, y, mu
+                        trained_policy, X, y, mu, std
                     )
                     val_epoch_loss += val_loss.item()
                     val_batch_count += 1
@@ -219,10 +236,15 @@ def train_single_policy(
         test_batch_count = 0
 
         with torch.no_grad():
-            for X, y, mu in test_dataloader:
-                X, y, mu = X.to(device), y.to(device), mu.to(device)
+            for X, y, mu, std in test_dataloader:
+                X, y, mu, std = (
+                    X.to(device),
+                    y.to(device),
+                    mu.to(device),
+                    std.to(device),
+                )
                 test_loss, metrics = loss_function.compute_loss(
-                    trained_policy, X, y, mu
+                    trained_policy, X, y, mu, std
                 )
                 test_epoch_loss += test_loss.item()
                 test_batch_count += 1
@@ -247,6 +269,7 @@ def train_single_policy(
         train_metrics_history,
         val_metrics_history,
         test_metrics_history,
+        dist,
     )
 
 
