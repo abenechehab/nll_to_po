@@ -32,7 +32,7 @@ class MSE(LossFunction):
 
     name = "MSE"
 
-    def compute_loss(self, policy, X, y, mu):
+    def compute_loss(self, policy, X, y, mu, std):
         mean, _ = policy(X)
         loss = nn.MSELoss()(mean, y)
         return loss, {
@@ -46,23 +46,23 @@ class NLL(LossFunction):
 
     name = "NLL"
 
-    def compute_loss(self, policy, X, y, mu):
-        mean, std = policy(X)
-        dist = D.Normal(mean, std)
+    def compute_loss(self, policy, X, y, mu, std):
+        mean, sigma = policy(X)
+        dist = D.Normal(mean, sigma)
         nll = -dist.log_prob(y).mean()
         metrics = {
             "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": nll.item(),
-            "dist": D.Normal(mean[0].clone(), std[0].clone()),
+            "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "loss": nll.item(),
-            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
+            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
         }
-        if std.shape[-1] == 2:
-            for idx in range(std.shape[-1]):
+        if sigma.shape[-1] == 2:
+            for idx in range(sigma.shape[-1]):
                 if policy.fixed_logstd:
-                    metrics[f"std_{idx}"] = std[idx].mean().item()
+                    metrics[f"std_{idx}"] = sigma[idx].mean().item()
                 else:
-                    metrics[f"std_{idx}"] = std[:, idx].mean().item()
+                    metrics[f"std_{idx}"] = sigma[:, idx].mean().item()
         return nll, metrics
 
 
@@ -98,9 +98,9 @@ class PG(LossFunction):
         else:  # "none"
             return rewards
 
-    def compute_loss(self, policy, X, y, mu):
-        mean, std = policy(X)
-        dist = D.Normal(mean, std)
+    def compute_loss(self, policy, X, y, mu, std):
+        mean, sigma = policy(X)
+        dist = D.Normal(mean, sigma)
 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
@@ -119,18 +119,18 @@ class PG(LossFunction):
         metrics = {
             "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": D.Normal(mean[0].clone(), std[0].clone()),
+            "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "entropy": dist.entropy().mean().item(),
             "reward_mean": rewards.mean().item(),
             "loss": loss.item(),
-            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
+            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
         }
-        if std.shape[-1] == 2:
-            for idx in range(std.shape[-1]):
+        if sigma.shape[-1] == 2:
+            for idx in range(sigma.shape[-1]):
                 if policy.fixed_logstd:
-                    metrics[f"std_{idx}"] = std[idx].mean().item()
+                    metrics[f"std_{idx}"] = sigma[idx].mean().item()
                 else:
-                    metrics[f"std_{idx}"] = std[:, idx].mean().item()
+                    metrics[f"std_{idx}"] = sigma[:, idx].mean().item()
         return loss, metrics
 
 
