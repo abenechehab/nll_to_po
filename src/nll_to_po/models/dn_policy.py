@@ -123,3 +123,15 @@ class MLPPolicy_Full_Cov(nn.Module):
         scale_tril = scale_tril + self.jitter * eye
 
         return mean, scale_tril
+
+###Classification Classes for UCI datasets 
+
+class MulticlassLogisticRegression(nn.Module):
+    def __init__(self, input_dim: int, num_classes: int):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        logits = self.linear(x)               # (B, C)
+        probs = F.softmax(logits, dim=-1)      # (B, C)
+        return logits, probs
