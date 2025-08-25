@@ -60,6 +60,7 @@ def train_single_policy(
     min_lr: float = 1e-6,
     device: torch.device = torch.device("cpu"),
     return_dist: bool = False,
+    max_grad_norm: float = 1e5,
 ):
     """Train a single policy with the specified loss function"""
 
@@ -107,7 +108,7 @@ def train_single_policy(
 
             # Compute gradient norm
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                trained_policy.parameters(), max_norm=1e9
+                trained_policy.parameters(), max_norm=max_grad_norm
             )
 
             optimizer.step()
