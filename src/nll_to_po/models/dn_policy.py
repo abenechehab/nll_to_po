@@ -4,7 +4,7 @@
 from typing import Union
 import torch
 import torch.nn as nn
-import torch.functional as F
+import torch.nn.functional as F
 
 
 class MLPPolicy(nn.Module):
@@ -125,7 +125,9 @@ class MLPPolicy_Full_Cov(nn.Module):
 
         return mean, scale_tril
 
+
 ###Classification Classes for UCI datasets
+
 
 class MulticlassLogisticRegression(nn.Module):
     def __init__(self, input_dim: int, num_classes: int):
@@ -133,8 +135,8 @@ class MulticlassLogisticRegression(nn.Module):
         self.linear = nn.Linear(input_dim, num_classes)
 
     def forward(self, x):
-        logits = self.linear(x)               # (B, C)
-        probs = F.softmax(logits, dim=-1)      # (B, C)
+        logits = self.linear(x)  # (B, C)
+        probs = F.softmax(logits, dim=-1)  # (B, C)
         return logits, probs
 
 
