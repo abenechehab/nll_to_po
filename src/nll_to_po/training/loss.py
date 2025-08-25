@@ -7,6 +7,7 @@ from typing import Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
 import torch.distributions as D
+import torch.nn.functional as F
 
 import nll_to_po.training.reward as R
 
@@ -237,49 +238,43 @@ class PG_Full_Cov(LossFunction):
         }
         return loss, metrics
 
-###loss pour le cas de la classfication 
 
 ###Classifications loss###
-import torch.nn.functional as F
+
 
 class NLL_Classification(LossFunction):
     name = "NLL_ClS"
 
-    def compute_loss(self, policy, X, y):
-        logits, probs = policy(X) 
-        loss=F.cross_entropy(logits,y)                # (B, C), y: (B,) long
+    def compute_loss(self, policy, X, y, mu, std):
+        logits, probs = policy(X)
+        loss = F.cross_entropy(logits, y)  # (B, C), y: (B,) long
 
         with torch.no_grad():
-            #probs = torch.softmax(logits, dim=-1)
-            pred  = probs.argmax(dim=-1)
-            acc   = (pred == y).float().mean().item()
-            ent   = (-(probs * probs.clamp_min(1e-12).log()).sum(-1)).mean().item()
+            # probs = torch.softmax(logits, dim=-1)
+            pred = probs.argmax(dim=-1)
+            acc = (pred == y).float().mean().item()
+            ent = (-(probs * probs.clamp_min(1e-12).log()).sum(-1)).mean().item()
 
         metrics = {"NLL": loss.item(), "accuracy": acc, "entropy": ent}
         return loss, metrics
-    
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
-import nll_to_po.training.reward as R
 
 class PO_Entropy_Classification(LossFunction):
     """Policy gradient with entropy regularization for classification.
-       Policy outputs (logits, probs); distribution is Categorical(logits=logits).
+    Policy outputs (logits, probs); distribution is Categorical(logits=logits).
     """
+
     name = "PO_ENT_CL"
 
     def __init__(
         self,
-        reward_fn: R.RewardFunction,           
+        reward_fn: R.RewardFunction,
         n_generations: int = 5,
-        use_rsample: bool = False,               
-        reward_transform: str = "normalize",     # "normalize", "rbf", "none"
+        use_rsample: bool = False,
+        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
         rbf_gamma: Optional[float] = None,
         entropy_weight: float = 0.01,
-        temperature: float = 1.0,                
+        temperature: float = 1.0,
     ):
         self.n_generations = n_generations
         self.use_rsample = use_rsample
@@ -298,21 +293,21 @@ class PO_Entropy_Classification(LossFunction):
         else:
             return rewards
 
-    def compute_loss(self, policy, X, y):
+    def compute_loss(self, policy, X, y, mu, std):
         """
         policy(X): returns logits and probs of shape (B, C)
         y: LongTensor of shape (B,) with class indices
         """
-        logits, probs = policy(X)                              
+        logits, probs = policy(X)
         dist = torch.distributions.Categorical(logits=logits)
 
-        samples = dist.sample((self.n_generations,))     
-        logp    = dist.log_prob(samples)                 
+        samples = dist.sample((self.n_generations,))
+        logp = dist.log_prob(samples)
 
-        y_b = y.unsqueeze(0).expand_as(samples)         
+        y_b = y.unsqueeze(0).expand_as(samples)
 
-        rewards = self.reward_fn(y_hat=samples, y=y_b)  
-        rewards = self._transform_rewards(rewards)       # (G,B)
+        rewards = self.reward_fn(y_hat=samples, y=y_b)
+        rewards = self._transform_rewards(rewards)  # (G,B)
 
         pg_loss = -(logp * rewards).mean()
 
