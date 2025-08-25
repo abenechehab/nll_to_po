@@ -43,10 +43,10 @@ from nll_to_po.training.utils import (
 class ExperimentConfig:
     # Data args
     dataset: str = "mujoco/halfcheetah/medium-v0"
-    train_size: float = 0.6
-    test_size: float = 0.2
+    train_size: float = 0.5
+    test_size: float = 0.3
     data_proportion: float = 0.1
-    batch_size: int = -1
+    batch_size: int = 64
 
     # Model/optim args
     hidden_sizes: List[int] = field(default_factory=lambda: [64, 64])
@@ -55,12 +55,14 @@ class ExperimentConfig:
     learning_rate: float = 0.01
     early_stopping_patience: int = 50
     bounded_sigma: bool = False
+    max_grad_norm: float = 1.0
 
     # PG-specific
     n_generations: int = 5
     pg_rsample: bool = False
     reward_transform: str = "normalize"
     entropy_weights: List[float] = field(default_factory=lambda: [0.1, 1.0, 5.0])
+    clip_coef: Optional[float] = None
 
     # Infra/logging
     n_experiments: int = 3
@@ -238,6 +240,7 @@ def run_experiment_task(
     exp_idx: int,
     loss_cfg: Dict,
     parquet_dir: str,
+    max_grad_norm: float,
 ) -> Dict:
     """Single experiment worker: builds data, policy, loss; trains; saves Parquet; returns metadata."""
     # Device chosen by Ray via CUDA_VISIBLE_DEVICES
@@ -268,6 +271,7 @@ def run_experiment_task(
             use_rsample=bool(loss_cfg["use_rsample"]),
             reward_transform=str(loss_cfg["reward_transform"]),
             entropy_weight=float(loss_cfg["entropy_weight"]),
+            clip_coef=float(loss_cfg["clip_coef"]),
         )
     else:
         raise ValueError(f"Unsupported loss type: {loss_type}")
@@ -301,6 +305,7 @@ def run_experiment_task(
                 "entropy_weight": float(loss_cfg["entropy_weight"]),
                 "reward_fn": "Mahalanobis",
                 "U": U_label,
+                "clip_coef": float(loss_cfg["clip_coef"]),
             }
         )
 
@@ -330,6 +335,7 @@ def run_experiment_task(
         logger=logger,
         device=device,
         early_stopping_patience=early_stopping_patience,
+        max_grad_norm=max_grad_norm,
     )
 
     # Build DataFrames
@@ -423,6 +429,7 @@ def main(args: ExperimentConfig):
             exp_idx=exp_idx,
             loss_cfg=loss_cfg,
             parquet_dir=parquet_dir,
+            max_grad_norm=args.max_grad_norm,
         )
         tasks.append(task)
 
@@ -444,6 +451,7 @@ def main(args: ExperimentConfig):
                     "reward_transform": args.reward_transform,
                     "entropy_weight": float(entropy_weight),
                     "U_type": U_choice,
+                    "clip_coef": args.clip_coef,
                 }
                 if U_choice == "scaled":
                     # scaled factor = (lambda * n) / trace_sigma
