@@ -79,7 +79,7 @@ class PG(LossFunction):
         n_generations: int = 5,
         use_rsample: bool = False,
         reward_transform: str = "normalize",  # "normalize", "rbf", "none"
-        rbf_gamma: Optional[float] = None,
+        rbf_gamma: float = 1.0,
         entropy_weight: float = 0.01,
         clip_coef: Optional[float] = None,
     ):
@@ -94,7 +94,7 @@ class PG(LossFunction):
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
-        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
+        if self.reward_transform == "rbf":
             return torch.exp(self.rbf_gamma * rewards)
         elif self.reward_transform == "normalize":
             rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
