@@ -27,6 +27,7 @@ import torch
 import minari
 import ray
 import tyro
+from datetime import datetime
 
 import nll_to_po.models.dn_policy as Policy
 import nll_to_po.training.loss as L
@@ -53,6 +54,7 @@ class ExperimentConfig:
     n_updates: int = 300
     learning_rate: float = 0.01
     early_stopping_patience: int = 50
+    bounded_sigma: bool = False
 
     # PG-specific
     n_generations: int = 5
@@ -141,19 +143,25 @@ def generate_data_minari(
         y[trn_size + val_size :],
     )
 
-    train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
+    train_dataset = torch.utils.data.TensorDataset(
+        X_train, y_train, y_train, torch.zeros_like(y_train)
+    )
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size if batch_size > 0 else X_train.shape[0],
         shuffle=True,
     )
-    val_dataset = torch.utils.data.TensorDataset(X_val, y_val)
+    val_dataset = torch.utils.data.TensorDataset(
+        X_val, y_val, y_val, torch.zeros_like(y_val)
+    )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=batch_size if batch_size > 0 else X_val.shape[0],
         shuffle=False,
     )
-    test_dataset = torch.utils.data.TensorDataset(X_test, y_test)
+    test_dataset = torch.utils.data.TensorDataset(
+        X_test, y_test, y_test, torch.zeros_like(y_test)
+    )
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=batch_size if batch_size > 0 else X_test.shape[0],
@@ -178,7 +186,7 @@ def generate_data_minari(
 def estimate_trace_sigma(train_loader: torch.utils.data.DataLoader) -> float:
     """Estimate trace of the covariance matrix of targets from training data."""
     y_train = []
-    for _, yb in train_loader:
+    for _, yb, _, _ in train_loader:
         y_train.append(yb)
     y_train = torch.cat(y_train, dim=0)
     y_mean = torch.mean(y_train, dim=0)
@@ -213,6 +221,7 @@ def df_from_metrics(
 @ray.remote(num_gpus=0.1)
 def run_experiment_task(
     *,
+    policy: Policy.MLPPolicy,
     train_loader: torch.utils.data.DataLoader,
     val_loader: torch.utils.data.DataLoader,
     test_loader: torch.utils.data.DataLoader,
@@ -233,14 +242,6 @@ def run_experiment_task(
     """Single experiment worker: builds data, policy, loss; trains; saves Parquet; returns metadata."""
     # Device chosen by Ray via CUDA_VISIBLE_DEVICES
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Build policy fresh per run
-    policy = build_policy(
-        input_dim=data_cfg["input_dim"],
-        output_dim=data_cfg["output_dim"],
-        hidden_sizes=hidden_sizes,
-        fixed_logstd=fixed_logstd,
-    )
 
     # Build loss function from config
     loss_type = loss_cfg["type"]
@@ -316,7 +317,7 @@ def run_experiment_task(
         wandb_run = wandb.init(project=wandb_project, config=run_cfg)
 
     # Train
-    _, train_metrics, val_metrics, test_metrics = train_single_policy(
+    _, train_metrics, val_metrics, test_metrics, _ = train_single_policy(
         policy=policy,
         train_dataloader=train_loader,
         val_dataloader=val_loader,
@@ -372,6 +373,31 @@ def main(args: ExperimentConfig):
     # Estimate data covariance
     trace_sigma = estimate_trace_sigma(train_loader)
 
+    # Build policy
+    if args.bounded_sigma:
+        # Compute LOG_VAR_MAX = log(max(obs) - min(obs))
+        all_targets = []
+        for _, y_batch, _, _ in train_loader:
+            all_targets.append(y_batch)
+        all_targets = torch.cat(all_targets, dim=0)
+        obs_min = torch.min(all_targets, dim=0)[0]
+        obs_max = torch.max(all_targets, dim=0)[0]
+        log_var_max = torch.log(obs_max - obs_min)
+        policy = Policy.MLPPolicyBounded(
+            input_dim=data_cfg["input_dim"],
+            output_dim=data_cfg["output_dim"],
+            hidden_sizes=args.hidden_sizes,
+            fixed_logstd=args.fixed_logstd,
+            log_var_max=log_var_max,
+        )
+    else:
+        policy = build_policy(
+            input_dim=data_cfg["input_dim"],
+            output_dim=data_cfg["output_dim"],
+            hidden_sizes=args.hidden_sizes,
+            fixed_logstd=args.fixed_logstd,
+        )
+
     # Build tasks
     tasks = []
     parquet_dir = os.path.abspath(args.results_dir)
@@ -380,6 +406,7 @@ def main(args: ExperimentConfig):
     # Helper to enqueue a task
     def enqueue(loss_cfg: Dict, exp_idx: int):
         task = run_experiment_task.remote(
+            policy=policy,
             train_loader=train_loader,
             val_loader=val_loader,
             test_loader=test_loader,
@@ -443,14 +470,17 @@ def main(args: ExperimentConfig):
                 print(f"Warning: failed to read {r['parquet_path']}: {e}")
         if frames:
             merged = pd.concat(frames, ignore_index=True)
-            merged_path = os.path.join(
-                parquet_dir, f"results_all_{'_'.join(args.dataset.split('/'))}.parquet"
+            # Create timestamped version instead of merging
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Create folder with dataset name
+            dataset_folder = os.path.join(
+                parquet_dir, f"results_{'_'.join(args.dataset.split('/'))}"
             )
-            # Check if merged file already exists
-            if os.path.exists(merged_path):
-                existing_df = pd.read_parquet(merged_path)
-                # Concatenate with existing data
-                merged = pd.concat([existing_df, merged], ignore_index=True)
+            os.makedirs(dataset_folder, exist_ok=True)
+
+            # Save timestamped version
+            merged_path = os.path.join(dataset_folder, f"results_{timestamp}.parquet")
             merged.to_parquet(merged_path, index=False, compression="zstd")
             print(f"Saved merged results to {merged_path}")
 
