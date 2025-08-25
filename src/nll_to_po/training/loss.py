@@ -57,6 +57,7 @@ class NLL(LossFunction):
             "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "loss": nll.item(),
             "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
+            "entropy": dist.entropy().mean().item(),
         }
         if sigma.shape[-1] == 2:
             for idx in range(sigma.shape[-1]):
@@ -68,7 +69,7 @@ class NLL(LossFunction):
 
 
 class PG(LossFunction):
-    """Policy optimization loss with configurable reward and entropy regularization"""
+    """Policy gradient loss with configurable reward and entropy regularization"""
 
     name = "PG"
 
@@ -80,6 +81,7 @@ class PG(LossFunction):
         reward_transform: str = "normalize",  # "normalize", "rbf", "none"
         rbf_gamma: Optional[float] = None,
         entropy_weight: float = 0.01,
+        clip_coef: Optional[float] = None,
     ):
         self.n_generations = n_generations
         self.use_rsample = use_rsample
@@ -88,6 +90,7 @@ class PG(LossFunction):
         self.entropy_weight = entropy_weight
         self.reward_fn = reward_fn
         self.name = f"{self.name}(lam={self.entropy_weight})_{self.reward_fn.name}"
+        self.clip_coef = clip_coef
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
@@ -113,6 +116,10 @@ class PG(LossFunction):
             neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
             rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
+            if self.clip_coef is not None:
+                neg_log_prob = torch.clamp(
+                    neg_log_prob, -self.clip_coef, self.clip_coef
+                )
             loss = (neg_log_prob * rewards).mean()
 
         loss -= self.entropy_weight * dist.entropy().mean()
@@ -299,7 +306,7 @@ class PO_Entropy_Classification(LossFunction):
         y: LongTensor of shape (B,) with class indices
         """
         logits, probs = policy(X)
-        dist = torch.distributions.Categorical(logits=logits)
+        dist = D.Categorical(logits=logits)
 
         samples = dist.sample((self.n_generations,))
         logp = dist.log_prob(samples)
