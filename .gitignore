@@ -5,6 +5,7 @@
 *.pyc
 
 .ipynb_checkpoints/
+.secrets.baseline*
 
 *.egg-info
 PKG-INFO
