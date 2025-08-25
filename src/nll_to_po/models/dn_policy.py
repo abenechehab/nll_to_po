@@ -1,6 +1,7 @@
 """Basic density network policy model."""
 
 # test
+from typing import Union
 import torch
 import torch.nn as nn
 import torch.functional as F
@@ -124,7 +125,7 @@ class MLPPolicy_Full_Cov(nn.Module):
 
         return mean, scale_tril
 
-###Classification Classes for UCI datasets 
+###Classification Classes for UCI datasets
 
 class MulticlassLogisticRegression(nn.Module):
     def __init__(self, input_dim: int, num_classes: int):
@@ -135,3 +136,55 @@ class MulticlassLogisticRegression(nn.Module):
         logits = self.linear(x)               # (B, C)
         probs = F.softmax(logits, dim=-1)      # (B, C)
         return logits, probs
+
+
+class MLPPolicyBounded(nn.Module):
+    """Multi-layer perceptron policy with Bounded log_std (learned bounds)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_sizes: list,
+        fixed_logstd: bool = False,
+        log_var_max: Union[float, torch.Tensor] = 1.6,
+        log_var_min: Union[float, torch.Tensor] = -10.0,
+    ):
+        super().__init__()
+        layers = []
+        dims = [input_dim] + hidden_sizes
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.ReLU())
+        self.net = nn.Sequential(*layers)
+
+        self.mean = nn.Sequential(
+            nn.Linear(dims[-1], output_dim),
+        )
+
+        self.fixed_logstd = fixed_logstd
+        if fixed_logstd:
+            self.log_std = nn.Parameter(torch.zeros(output_dim))
+        else:
+            self.log_std = nn.Sequential(
+                nn.Linear(dims[-1], output_dim),
+            )
+
+            # Learnable logsigma bounds:
+            # log_var_max = log(max(obs) - min(obs))
+            # log_var_min = log(0) = -inf = -10
+            self.max_logsigma = nn.Parameter(torch.ones([1, output_dim]) * log_var_max)
+            self.min_logsigma = nn.Parameter(-torch.ones([1, output_dim]) * log_var_min)
+
+    def forward(self, state):
+        """Forward pass to compute mean and standard deviation."""
+        common = self.net(state)
+        mean = self.mean(common)
+        log_std = self.log_std(common) if not self.fixed_logstd else self.log_std
+
+        # Bound logsigma (following PETS' implementation)
+        std = self.max_logsigma - nn.Softplus()(self.max_logsigma - log_std)
+        std = self.min_logsigma + nn.Softplus()(std - self.min_logsigma)
+
+        std = torch.exp(log_std)
+        return mean, std
