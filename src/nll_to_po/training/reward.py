@@ -50,17 +50,18 @@ class Mahalanobis(RewardFunction):
 
 ###classification losses with onehote encoding (on peut en discuter lundi)
 
+
 class OneHotMahalanobis:
     def __init__(self, U: torch.Tensor, num_classes: int):
-        self.U = U         # (C, C), SPD
+        self.U = U  # (C, C), SPD
         self.C = num_classes
 
     def __call__(self, y_hat, y):
-        #print(y_hat)
+        # print(y_hat)
         # y_hat, y: (G,B) class ids
         yh = torch.nn.functional.one_hot(y_hat, num_classes=self.C).float()  # (G,B,C)
-        #yh=F.softmax(y_hat, dim=-1)
-        yt = torch.nn.functional.one_hot(y,num_classes=self.C).float()  # (G,B,C)
-        diff = yh - yt                                                        # (G,B,C)
+        # yh=F.softmax(y_hat, dim=-1)
+        yt = torch.nn.functional.one_hot(y, num_classes=self.C).float()  # (G,B,C)
+        diff = yh - yt  # (G,B,C)
         # - (diff^T U diff) per (g,b)
         return -torch.einsum("gbc,cd,gbd->gb", diff, self.U, diff)
