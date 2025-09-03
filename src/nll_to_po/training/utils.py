@@ -54,8 +54,8 @@ def train_single_policy(
     wandb_run=None,
     tensorboard_writer: Optional[SummaryWriter] = None,
     logger: Optional[logging.Logger] = None,
-    scheduler_patience: int = 10,
-    early_stopping_patience: int = 20,
+    scheduler_patience: int = -1,
+    early_stopping_patience: int = -1,
     scheduler_factor: float = 0.5,
     min_lr: float = 1e-6,
     device: torch.device = torch.device("cpu"),
@@ -72,7 +72,7 @@ def train_single_policy(
         optimizer,
         mode="min",
         factor=scheduler_factor,
-        patience=scheduler_patience,
+        patience=scheduler_patience if scheduler_patience > 0 else n_updates,
         min_lr=min_lr,
     )
 
@@ -213,16 +213,17 @@ def train_single_policy(
         scheduler.step(scheduler_and_early_stopping_loss)
 
         # Early stopping check
-        if scheduler_and_early_stopping_loss < best_val_loss:
-            best_val_loss = scheduler_and_early_stopping_loss
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
+        if early_stopping_patience > 0:
+            if scheduler_and_early_stopping_loss < best_val_loss:
+                best_val_loss = scheduler_and_early_stopping_loss
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
-        if epochs_without_improvement >= early_stopping_patience:
-            if logger is not None:
-                logger.info(f"Early stopping triggered after {epoch + 1} epochs")
-            break
+            if epochs_without_improvement >= early_stopping_patience:
+                if logger is not None:
+                    logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                break
 
     if logger is not None:
         logger.info(f"Training completed after {epoch + 1} epochs")
