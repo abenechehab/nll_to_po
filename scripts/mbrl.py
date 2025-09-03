@@ -46,28 +46,33 @@ class ExperimentConfig:
     train_size: float = 0.5
     test_size: float = 0.3
     data_proportion: float = 0.1
-    batch_size: int = 64
+    batch_size: int = -1
 
     # Model/optim args
     hidden_sizes: List[int] = field(default_factory=lambda: [64, 64])
     fixed_logstd: bool = False
-    n_updates: int = 300
-    learning_rate: float = 0.01
-    early_stopping_patience: int = 50
+    n_updates: int = 200
+    learning_rate: float = 0.001
+    early_stopping_patience: int = -1
+    scheduler_patience: int = -1
     bounded_sigma: bool = False
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 10.0
 
     # PG-specific
     n_generations: int = 5
     pg_rsample: bool = False
-    reward_transform: str = "normalize"
-    entropy_weights: List[float] = field(default_factory=lambda: [0.1, 1.0, 5.0])
+    reward_transform: str = "none"
+    entropy_weights: List[float] = field(
+        default_factory=lambda: [
+            round(lamda, 2) for lamda in 5 * np.logspace(-1, 0, num=7)
+        ]
+    )
     clip_coef: Optional[float] = None
 
     # Infra/logging
-    n_experiments: int = 3
+    n_experiments: int = 10
     use_wandb: bool = False
-    wandb_project: str = "tractable"
+    wandb_project: str = "mbrl"
     env_id: str = "mbrl"
     log_dir: str = "logs"
     results_dir: str = "logs/mbrl_results"
@@ -145,6 +150,7 @@ def generate_data_minari(
         y[trn_size + val_size :],
     )
 
+    # using y as mu and sigma zero
     train_dataset = torch.utils.data.TensorDataset(
         X_train, y_train, y_train, torch.zeros_like(y_train)
     )
@@ -195,7 +201,8 @@ def estimate_trace_sigma(train_loader: torch.utils.data.DataLoader) -> float:
     y_centered = y_train - y_mean
     covariance_matrix = torch.cov(y_centered.T)
     trace_sigma = torch.trace(covariance_matrix).item()
-    return float(trace_sigma)
+    sigma_inverse = covariance_matrix  # + 1e-6 * torch.eye(covariance_matrix.size(0))
+    return float(trace_sigma), sigma_inverse.inverse()
 
 
 def build_policy(
@@ -237,6 +244,7 @@ def run_experiment_task(
     env_id: str,
     log_dir: str,
     early_stopping_patience: int,
+    scheduler_patience: int,
     exp_idx: int,
     loss_cfg: Dict,
     parquet_dir: str,
@@ -261,6 +269,9 @@ def run_experiment_task(
             scale_val = float(loss_cfg["U_scale"])
             U = scale_val * torch.eye(data_cfg["output_dim"]).to(device)
             U_label = r"PG($U=\frac{\lambda n}{2 Tr(\Sigma)}I$)"
+        elif loss_cfg["U_type"] == "full":
+            U = loss_cfg["U_full"].to(device)
+            U_label = r"PG($U=\frac{\lambda}{2}\Sigma^{-1}$)"
         else:
             raise ValueError(f"Unknown U_type: {loss_cfg['U_type']}")
 
@@ -271,7 +282,7 @@ def run_experiment_task(
             use_rsample=bool(loss_cfg["use_rsample"]),
             reward_transform=str(loss_cfg["reward_transform"]),
             entropy_weight=float(loss_cfg["entropy_weight"]),
-            clip_coef=float(loss_cfg["clip_coef"]),
+            clip_coef=loss_cfg["clip_coef"],
         )
     else:
         raise ValueError(f"Unsupported loss type: {loss_type}")
@@ -305,7 +316,7 @@ def run_experiment_task(
                 "entropy_weight": float(loss_cfg["entropy_weight"]),
                 "reward_fn": "Mahalanobis",
                 "U": U_label,
-                "clip_coef": float(loss_cfg["clip_coef"]),
+                "clip_coef": loss_cfg["clip_coef"],
             }
         )
 
@@ -335,6 +346,7 @@ def run_experiment_task(
         logger=logger,
         device=device,
         early_stopping_patience=early_stopping_patience,
+        scheduler_patience=scheduler_patience,
         max_grad_norm=max_grad_norm,
     )
 
@@ -377,7 +389,7 @@ def main(args: ExperimentConfig):
         batch_size=args.batch_size,
     )
     # Estimate data covariance
-    trace_sigma = estimate_trace_sigma(train_loader)
+    trace_sigma, sigma_inverse = estimate_trace_sigma(train_loader)
 
     # Build policy
     if args.bounded_sigma:
@@ -426,6 +438,7 @@ def main(args: ExperimentConfig):
             env_id=args.env_id,
             log_dir=args.log_dir,
             early_stopping_patience=args.early_stopping_patience,
+            scheduler_patience=args.scheduler_patience,
             exp_idx=exp_idx,
             loss_cfg=loss_cfg,
             parquet_dir=parquet_dir,
@@ -443,7 +456,7 @@ def main(args: ExperimentConfig):
     n = data_cfg["output_dim"]
     for exp_idx in range(args.n_experiments):
         for entropy_weight in args.entropy_weights:
-            for U_choice in ["I", "scaled"]:
+            for U_choice in ["I", "scaled", "full"]:
                 loss_cfg: Dict = {
                     "type": "PG",
                     "n_generations": args.n_generations,
@@ -459,6 +472,8 @@ def main(args: ExperimentConfig):
                         2 * trace_sigma, 1e-12
                     )
                     loss_cfg["U_scale"] = U_scale
+                if U_choice == "full":
+                    loss_cfg["U_full"] = (float(entropy_weight) / 2) * sigma_inverse
                 enqueue(loss_cfg, exp_idx)
 
     # Collect results
