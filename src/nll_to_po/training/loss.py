@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.distributions as D
 import torch.nn.functional as F
+from torch.func import functional_call
 
 import nll_to_po.training.reward as R
 
@@ -22,7 +23,7 @@ class LossFunction(ABC):
 
     @abstractmethod
     def compute_loss(
-        self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor, mu: torch.Tensor
+        self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, dict]:
         """Compute the loss given policy, inputs X, and targets y"""
         pass
@@ -68,6 +69,26 @@ class NLL(LossFunction):
         return nll, metrics
 
 
+class FuncNLL(LossFunction):
+    """Functional Negative log-likelihood loss"""
+
+    name = "FuncNLL"
+
+    def compute_loss(self, policy_model, policy_params, X, y, mu, std):
+        mean, sigma = functional_call(policy_model, policy_params, (X,))
+        dist = D.Normal(mean, sigma)
+        nll = -dist.log_prob(y).mean()
+        metrics = {
+            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
+            "NLL": nll.item(),
+            "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
+            "loss": nll.item(),
+            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
+            "entropy": dist.entropy().mean().item(),
+        }
+        return nll, metrics
+
+
 class PG(LossFunction):
     """Policy gradient loss with configurable reward and entropy regularization"""
 
@@ -102,19 +123,19 @@ class PG(LossFunction):
         else:  # "none"
             return rewards
 
-    def compute_loss(self, policy, X, y, mu, std):
+    def compute_loss(self, policy, X, y, mu, std, **kwargs):
         mean, sigma = policy(X)
         dist = D.Normal(mean, sigma)
 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
-            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self.reward_fn(y_hat=samples, y=y, **kwargs)
             rewards = self._transform_rewards(rewards)
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
             neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
-            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self.reward_fn(y_hat=samples, y=y, **kwargs)
             rewards = self._transform_rewards(rewards)
             if self.clip_coef is not None:
                 neg_log_prob = torch.clamp(
@@ -139,6 +160,74 @@ class PG(LossFunction):
                     metrics[f"std_{idx}"] = sigma[idx].mean().item()
                 else:
                     metrics[f"std_{idx}"] = sigma[:, idx].mean().item()
+        return loss, metrics
+
+
+class FuncPG(LossFunction):
+    """Functional Policy gradient loss with configurable reward and entropy regularization"""
+
+    name = "FuncPG"
+
+    def __init__(
+        self,
+        reward_fn: R.RewardFunction,
+        n_generations: int = 5,
+        use_rsample: bool = False,
+        reward_transform: str = "none",  # "normalize", "rbf", "none"
+        rbf_gamma: float = 1.0,
+        entropy_weight: float = 0.01,
+        clip_coef: Optional[float] = None,
+    ):
+        self.n_generations = n_generations
+        self.use_rsample = use_rsample
+        self.reward_transform = reward_transform
+        self.rbf_gamma = rbf_gamma
+        self.entropy_weight = entropy_weight
+        self.reward_fn = reward_fn
+        self.name = f"{self.name}(lam={self.entropy_weight})_{self.reward_fn.name}"
+        self.clip_coef = clip_coef
+
+    def _transform_rewards(self, rewards):
+        """Apply reward transformation"""
+        if self.reward_transform == "rbf":
+            return torch.exp(self.rbf_gamma * rewards)
+        elif self.reward_transform == "normalize":
+            rewards_min, _ = rewards.clone().detach().aminmax(dim=0, keepdim=True)
+            return rewards - rewards_min
+        else:  # "none"
+            return rewards
+
+    def compute_loss(self, policy_model, policy_params, X, y, mu, std, **kwargs):
+        mean, sigma = functional_call(policy_model, policy_params, (X,))
+        dist = D.Normal(mean, sigma)
+
+        if self.use_rsample:
+            samples = dist.rsample((self.n_generations,))
+            rewards = self.reward_fn(y_hat=samples, y=y, **kwargs)
+            rewards = self._transform_rewards(rewards)
+            loss = -rewards.mean()
+        else:
+            samples = dist.sample((self.n_generations,))
+            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y, **kwargs)
+            rewards = self._transform_rewards(rewards)
+            if self.clip_coef is not None:
+                neg_log_prob = torch.clamp(
+                    neg_log_prob, -self.clip_coef, self.clip_coef
+                )
+            loss = (neg_log_prob * rewards).mean()
+
+        loss -= self.entropy_weight * dist.entropy().mean()
+
+        metrics = {
+            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
+            "NLL": -dist.log_prob(y).mean().item(),
+            "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
+            "entropy": dist.entropy().mean().item(),
+            "reward_mean": rewards.mean().item(),
+            "loss": loss.item(),
+            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
+        }
         return loss, metrics
 
 
