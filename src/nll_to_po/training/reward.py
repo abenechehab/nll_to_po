@@ -1,8 +1,12 @@
 """Reward functions for training policies with PG."""
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 import torch
+from torch.func import functional_call
+
+import nll_to_po.models.reward_network as RM
 
 
 class RewardFunction(ABC):
@@ -11,7 +15,7 @@ class RewardFunction(ABC):
     name: str
 
     @abstractmethod
-    def __call__(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def __call__(self, y_hat: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
         """Compute the reward given generation y, and groundtruth y_star"""
         pass
 
@@ -48,9 +52,6 @@ class Mahalanobis(RewardFunction):
             )
 
 
-###classification losses with onehote encoding (on peut en discuter lundi)
-
-
 class OneHotMahalanobis:
     def __init__(self, U: torch.Tensor, num_classes: int):
         self.U = U  # (C, C), SPD
@@ -65,3 +66,57 @@ class OneHotMahalanobis:
         diff = yh - yt  # (G,B,C)
         # - (diff^T U diff) per (g,b)
         return -torch.einsum("gbc,cd,gbd->gb", diff, self.U, diff)
+
+
+class RewardNetwork(RewardFunction):
+    """MLP reward function"""
+
+    name = "RewardNetwork"
+
+    def __init__(self, reward_network: RM.RewardMLP):
+        self.reward_network = reward_network
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_network: Optional[RM.RewardMLP] = None,
+    ):
+        if reward_network is not None:
+            self.reward_network = reward_network
+
+        # Ensure both tensors have the same number of dimensions
+        if y_hat.dim() == 3 and y.dim() == 2:
+            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
+
+        input_rn = torch.cat([y_hat, y], dim=-1)
+        return self.reward_network(input_rn)
+
+
+class FuncRewardNetwork(RewardFunction):
+    """Functional MLP reward function"""
+
+    name = "FuncRewardNetwork"
+
+    def __init__(self, reward_model, reward_params):
+        self.reward_model = reward_model
+        self.reward_params = reward_params
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_model=None,
+        reward_params=None,
+    ):
+        if reward_model is not None:
+            self.reward_model = reward_model
+        if reward_params is not None:
+            self.reward_params = reward_params
+
+        # Ensure both tensors have the same number of dimensions
+        if y_hat.dim() == 3 and y.dim() == 2:
+            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
+
+        input_rn = torch.cat([y_hat, y], dim=-1)
+        return functional_call(self.reward_model, self.reward_params, input_rn)
