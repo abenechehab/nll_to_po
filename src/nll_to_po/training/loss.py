@@ -34,13 +34,15 @@ class MSE(LossFunction):
 
     name = "MSE"
 
-    def compute_loss(self, policy, X, y, mu, std):
+    def compute_loss(self, policy, X, y, mu=None, std=None):
         mean, _ = policy(X)
         loss = nn.MSELoss()(mean, y)
-        return loss, {
-            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
-            "loss": loss.item(),
-        }
+        metrics = {"loss": loss.item()}
+
+        if mu is not None:
+            metrics["mean_error"] = torch.sqrt(nn.MSELoss()(mean, mu)).item()
+
+        return loss, metrics
 
 
 class NLL(LossFunction):
@@ -48,18 +50,24 @@ class NLL(LossFunction):
 
     name = "NLL"
 
-    def compute_loss(self, policy, X, y, mu, std):
+    def compute_loss(self, policy, X, y, mu=None, std=None):
         mean, sigma = policy(X)
         dist = D.Normal(mean, sigma)
         nll = -dist.log_prob(y).mean()
         metrics = {
-            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": nll.item(),
             "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "loss": nll.item(),
-            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
             "entropy": dist.entropy().mean().item(),
         }
+
+        if mu is not None:
+            metrics["mean_error"] = torch.sqrt(nn.MSELoss()(mean, mu)).item()
+        if std is not None:
+            metrics["sigma_error"] = (
+                torch.norm(sigma - std, p="fro", dim=-1).mean().item()
+            )
+
         if sigma.shape[-1] == 2:
             for idx in range(sigma.shape[-1]):
                 if policy.fixed_logstd:
@@ -74,18 +82,24 @@ class FuncNLL(LossFunction):
 
     name = "FuncNLL"
 
-    def compute_loss(self, policy_model, policy_params, X, y, mu, std):
+    def compute_loss(self, policy_model, policy_params, X, y, mu=None, std=None):
         mean, sigma = functional_call(policy_model, policy_params, (X,))
         dist = D.Normal(mean, sigma)
         nll = -dist.log_prob(y).mean()
         metrics = {
-            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": nll.item(),
             "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "loss": nll.item(),
-            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
             "entropy": dist.entropy().mean().item(),
         }
+
+        if mu is not None:
+            metrics["mean_error"] = torch.sqrt(nn.MSELoss()(mean, mu)).item()
+        if std is not None:
+            metrics["sigma_error"] = (
+                torch.norm(sigma - std, p="fro", dim=-1).mean().item()
+            )
+
         return nll, metrics
 
 
@@ -123,7 +137,7 @@ class PG(LossFunction):
         else:  # "none"
             return rewards
 
-    def compute_loss(self, policy, X, y, mu, std, **kwargs):
+    def compute_loss(self, policy, X, y, mu=None, std=None, **kwargs):
         mean, sigma = policy(X)
         dist = D.Normal(mean, sigma)
 
@@ -146,14 +160,20 @@ class PG(LossFunction):
         loss -= self.entropy_weight * dist.entropy().mean()
 
         metrics = {
-            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "entropy": dist.entropy().mean().item(),
             "reward_mean": rewards.mean().item(),
             "loss": loss.item(),
-            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
         }
+
+        if mu is not None:
+            metrics["mean_error"] = torch.sqrt(nn.MSELoss()(mean, mu)).item()
+        if std is not None:
+            metrics["sigma_error"] = (
+                torch.norm(sigma - std, p="fro", dim=-1).mean().item()
+            )
+
         if sigma.shape[-1] == 2:
             for idx in range(sigma.shape[-1]):
                 if policy.fixed_logstd:
@@ -170,7 +190,7 @@ class FuncPG(LossFunction):
 
     def __init__(
         self,
-        reward_fn: R.RewardFunction,
+        reward_fn: R.FuncRewardNetwork,
         n_generations: int = 5,
         use_rsample: bool = False,
         reward_transform: str = "none",  # "normalize", "rbf", "none"
@@ -197,7 +217,9 @@ class FuncPG(LossFunction):
         else:  # "none"
             return rewards
 
-    def compute_loss(self, policy_model, policy_params, X, y, mu, std, **kwargs):
+    def compute_loss(
+        self, policy_model, policy_params, X, y, mu=None, std=None, **kwargs
+    ):
         mean, sigma = functional_call(policy_model, policy_params, (X,))
         dist = D.Normal(mean, sigma)
 
@@ -220,14 +242,20 @@ class FuncPG(LossFunction):
         loss -= self.entropy_weight * dist.entropy().mean()
 
         metrics = {
-            "mean_error": torch.sqrt(nn.MSELoss()(mean, mu)).item(),
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": D.Normal(mean[0].clone(), sigma[0].clone()),
             "entropy": dist.entropy().mean().item(),
             "reward_mean": rewards.mean().item(),
             "loss": loss.item(),
-            "sigma_error": torch.norm(sigma - std, p="fro", dim=-1).mean().item(),
         }
+
+        if mu is not None:
+            metrics["mean_error"] = torch.sqrt(nn.MSELoss()(mean, mu)).item()
+        if std is not None:
+            metrics["sigma_error"] = (
+                torch.norm(sigma - std, p="fro", dim=-1).mean().item()
+            )
+
         return loss, metrics
 
 
@@ -341,7 +369,7 @@ class PG_Full_Cov(LossFunction):
 class NLL_Classification(LossFunction):
     name = "NLL_ClS"
 
-    def compute_loss(self, policy, X, y, mu, std):
+    def compute_loss(self, policy, X, y, mu=None, std=None):
         logits, probs = policy(X)
         loss = F.cross_entropy(logits, y)  # (B, C), y: (B,) long
 
@@ -389,7 +417,7 @@ class PO_Entropy_Classification(LossFunction):
         else:
             return rewards
 
-    def compute_loss(self, policy, X, y, mu, std):
+    def compute_loss(self, policy, X, y, mu=None, std=None):
         """
         policy(X): returns logits and probs of shape (B, C)
         y: LongTensor of shape (B,) with class indices
