@@ -43,10 +43,27 @@ class RewardMLPMahalanobis(nn.Module):
         self.input_dim = input_dim
         self.matrix = nn.Parameter(torch.eye(input_dim), requires_grad=True)
 
-        # sigma(y_hat^T W + b)
-        # sigma((y-y_hat)^T W)
-
     def forward(self, state):
         """Forward pass to compute mean and standard deviation."""
         y, y_hat = state[..., : self.input_dim], state[..., self.input_dim :]
         return -torch.einsum("...i,ij,...j->...", (y - y_hat), self.matrix, (y - y_hat))
+
+
+class RewardMLPMahalanobisDiag(nn.Module):
+    """Multi-layer perceptron reward network with configurable architecture."""
+
+    def __init__(
+        self,
+        input_dim: int,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.param = nn.Parameter(torch.ones(1))
+
+    def forward(self, state):
+        """Forward pass to compute mean and standard deviation."""
+        y, y_hat = state[..., : self.input_dim], state[..., self.input_dim :]
+        matrix = torch.diag(
+            self.param * torch.ones(self.input_dim, device=self.param.device)
+        )
+        return -torch.einsum("...i,ij,...j->...", (y - y_hat), matrix, (y - y_hat))
