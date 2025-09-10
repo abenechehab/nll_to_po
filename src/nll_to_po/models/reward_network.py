@@ -55,15 +55,23 @@ class RewardMLPMahalanobisDiag(nn.Module):
     def __init__(
         self,
         input_dim: int,
+        init_param: float = 1.0,
+        use_softplus: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
-        self.param = nn.Parameter(torch.ones(1))
+        self.param = nn.Parameter(init_param * torch.ones(1))
+        self.use_softplus = use_softplus
 
     def forward(self, state):
         """Forward pass to compute mean and standard deviation."""
         y, y_hat = state[..., : self.input_dim], state[..., self.input_dim :]
+        param = (
+            torch.nn.functional.softplus(self.param)
+            if self.use_softplus
+            else self.param
+        )
         matrix = torch.diag(
-            self.param * torch.ones(self.input_dim, device=self.param.device)
+            param * torch.ones(self.input_dim, device=self.param.device)
         )
         return -torch.einsum("...i,ij,...j->...", (y - y_hat), matrix, (y - y_hat))
