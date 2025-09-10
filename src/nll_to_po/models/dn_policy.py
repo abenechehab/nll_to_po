@@ -16,12 +16,21 @@ class MLPPolicy(nn.Module):
         output_dim: int,
         hidden_sizes: list,
         fixed_logstd: bool = False,
+        use_batchnorm: bool = False,
+        use_layernorm: bool = False,
     ):
         super().__init__()
+        assert not (use_batchnorm and use_layernorm), (
+            "Cannot use both batchnorm and layernorm."
+        )
         layers = []
         dims = [input_dim] + hidden_sizes
         for i in range(len(dims) - 1):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(dims[i + 1]))
+            if use_layernorm:
+                layers.append(nn.LayerNorm(dims[i + 1]))
             layers.append(nn.ReLU())
         self.net = nn.Sequential(*layers)
 
