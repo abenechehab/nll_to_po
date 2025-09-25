@@ -383,6 +383,23 @@ class NLL_Classification(LossFunction):
         return loss, metrics
 
 
+class FuncNLL_Classification(LossFunction):
+    name = "FuncNLL_ClS"
+
+    def compute_loss(self, policy_model, policy_params, X, y, mu=None, std=None):
+        logits, probs = functional_call(policy_model, policy_params, (X,))
+        loss = F.cross_entropy(logits, y)  # (B, C), y: (B,) long
+
+        with torch.no_grad():
+            # probs = torch.softmax(logits, dim=-1)
+            pred = probs.argmax(dim=-1)
+            acc = (pred == y).float().mean().item()
+            ent = (-(probs * probs.clamp_min(1e-12).log()).sum(-1)).mean().item()
+
+        metrics = {"NLL": loss.item(), "accuracy": acc, "entropy": ent}
+        return loss, metrics
+
+
 class PO_Entropy_Classification(LossFunction):
     """Policy gradient with entropy regularization for classification.
     Policy outputs (logits, probs); distribution is Categorical(logits=logits).
@@ -417,7 +434,7 @@ class PO_Entropy_Classification(LossFunction):
         else:
             return rewards
 
-    def compute_loss(self, policy, X, y, mu=None, std=None):
+    def compute_loss(self, policy, X, y, mu=None, std=None, **kwargs):
         """
         policy(X): returns logits and probs of shape (B, C)
         y: LongTensor of shape (B,) with class indices
@@ -430,7 +447,7 @@ class PO_Entropy_Classification(LossFunction):
 
         y_b = y.unsqueeze(0).expand_as(samples)
 
-        rewards = self.reward_fn(y_hat=samples, y=y_b)
+        rewards = self.reward_fn(y_hat=samples, y=y_b, **kwargs)
         rewards = self._transform_rewards(rewards)  # (G,B)
 
         pg_loss = -(logp * rewards).mean()
@@ -447,5 +464,77 @@ class PO_Entropy_Classification(LossFunction):
             "accuracy": acc,
             "pg_loss": pg_loss.item(),
             "total_loss": loss.item(),
+            "reward_mean": rewards.mean().item(),
+        }
+        return loss, metrics
+
+
+class FuncPO_Entropy_Classification(LossFunction):
+    """(functional) Policy gradient with entropy regularization for classification.
+    Policy outputs (logits, probs); distribution is Categorical(logits=logits).
+    """
+
+    name = "Func_PO_ENT_CL"
+
+    def __init__(
+        self,
+        reward_fn: R.RewardFunction,
+        n_generations: int = 5,
+        use_rsample: bool = False,
+        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
+        rbf_gamma: Optional[float] = None,
+        entropy_weight: float = 0.01,
+        temperature: float = 1.0,
+    ):
+        self.n_generations = n_generations
+        self.use_rsample = use_rsample
+        self.reward_transform = reward_transform
+        self.rbf_gamma = rbf_gamma
+        self.entropy_weight = entropy_weight
+        self.reward_fn = reward_fn
+        self.temperature = temperature
+
+    def _transform_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
+        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
+            return torch.exp(self.rbf_gamma * rewards)
+        elif self.reward_transform == "normalize":
+            rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
+            return rewards - rewards_min
+        else:
+            return rewards
+
+    def compute_loss(
+        self, policy_model, policy_params, X, y, mu=None, std=None, **kwargs
+    ):
+        """
+        policy(X): returns logits and probs of shape (B, C)
+        y: LongTensor of shape (B,) with class indices
+        """
+        logits, probs = functional_call(policy_model, policy_params, (X,))
+        dist = D.Categorical(logits=logits)
+
+        samples = dist.sample((self.n_generations,))
+        logp = dist.log_prob(samples)
+
+        y_b = y.unsqueeze(0).expand_as(samples)
+
+        rewards = self.reward_fn(y_hat=samples, y=y_b, **kwargs)
+        rewards = self._transform_rewards(rewards)  # (G,B)
+
+        pg_loss = -(logp * rewards).mean()
+
+        ent = dist.entropy().mean()
+        loss = pg_loss - self.entropy_weight * ent
+
+        with torch.no_grad():
+            nll = F.cross_entropy(logits, y).item()
+            acc = (probs.argmax(dim=-1) == y).float().mean().item()
+
+        metrics = {
+            "NLL": nll,
+            "accuracy": acc,
+            "pg_loss": pg_loss.item(),
+            "total_loss": loss.item(),
+            "reward_mean": rewards.mean().item(),
         }
         return loss, metrics
