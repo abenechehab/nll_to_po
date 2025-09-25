@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from transformers import RobertaTokenizer, RobertaModel
+
 
 class RewardMLP(nn.Module):
     """Multi-layer perceptron reward network with configurable architecture."""
@@ -40,18 +42,18 @@ class RewardMLPMahalanobis(nn.Module):
         self,
         input_dim: int,
         is_diagonal: bool = False,
+        init_scale: float = 1.0,
     ):
         super().__init__()
         self.input_dim = input_dim
+        self.matrix = nn.Parameter(
+            init_scale * torch.eye(input_dim), requires_grad=True
+        )
         if is_diagonal:
-            # Only diagonal elements can have gradients
-            self.matrix = nn.Parameter(torch.eye(input_dim), requires_grad=True)
             # Register a hook to zero out gradients of off-diagonal elements
             self.matrix.register_hook(
                 lambda grad: grad * torch.eye(input_dim, device=grad.device)
             )
-        else:
-            self.matrix = nn.Parameter(torch.eye(input_dim), requires_grad=True)
 
     def forward(self, state):
         """Forward pass to compute mean and standard deviation."""
@@ -151,4 +153,61 @@ class EmbeddingMahalanobisReward(nn.Module):
         e_y = self.encoder(y)
         e_yhat = self.encoder(yhat)
         diff = e_y - e_yhat
+        return -torch.einsum("...i,ij,...j->...", diff, self.matrix, diff)
+
+
+class BertEmbeddingMahalanobisReward(nn.Module):
+    def __init__(
+        self,
+        train_encoder: bool = False,  # Freezing BERT's weights
+        train_matrix: bool = True,
+        max_length: int = 2048,
+    ):
+        super().__init__()
+        assert train_encoder or train_matrix, (
+            "At least one of train_encoder or train_matrix must be True"
+        )
+
+        # Load BERT model and tokenizer
+        self.tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
+        self.bert_model = RobertaModel.from_pretrained("roberta-large")
+        self.max_length = max_length
+
+        # Freeze the BERT model if train_encoder is False
+        if not train_encoder:
+            for param in self.bert_model.parameters():
+                param.requires_grad = False
+
+        # Mahalanobis scaling matrix
+        self.matrix = nn.Parameter(
+            torch.eye(self.bert_model.config.hidden_size), requires_grad=train_matrix
+        )
+
+    def encode(self, y, y_hat):
+        """Encodes a sentence into its BERT embedding."""
+        if isinstance(y, str) and isinstance(y_hat, str):
+            y, y_hat = [y], [y_hat]
+
+        assert (
+            isinstance(y, list) and isinstance(y_hat, list) and len(y) == len(y_hat)
+        ), "Inputs must be lists of strings of same length"
+
+        inputs = self.tokenizer(
+            y + y_hat,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+        )
+        with torch.no_grad():
+            outputs = self.bert_model(**inputs)
+        # exclude padding tokens
+        o = (outputs.last_hidden_state * inputs.attention_mask.unsqueeze(-1)).mean(
+            dim=1
+        )
+        return o[: len(y)], o[len(y) :]
+
+    def forward(self, y, y_hat):
+        e_y, e_y_hat = self.encode(y, y_hat)
+        diff = e_y - e_y_hat
         return -torch.einsum("...i,ij,...j->...", diff, self.matrix, diff)
