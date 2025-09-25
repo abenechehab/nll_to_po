@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torchvision.models import resnet18
+
 
 class MLPPolicy(nn.Module):
     """Multi-layer perceptron policy model with configurable architecture."""
@@ -199,3 +201,53 @@ class MLPPolicyBounded(nn.Module):
 
         std = torch.exp(log_std)
         return mean, std
+
+
+class CNNClassifier(nn.Module):
+    def __init__(self, in_channels: int, num_classes: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, 32, 3, padding=1)  # out: 32 x H x W
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)  # out: 64 x H x W
+        self.pool = nn.MaxPool2d(2, 2)  # /2 spatial
+        self.gap = nn.AdaptiveAvgPool2d((3, 3))  # force 3x3 (=> 64*3*3)
+
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 3 * 3, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x):
+        # x: (B, C, H, W)  (C = in_channels)
+        x = self.pool(F.relu(self.conv1(x)))  # -> 32 x H/2 x W/2
+        x = self.pool(F.relu(self.conv2(x)))  # -> 64 x H/4 x W/4
+        x = self.gap(x)  # -> 64 x 3 x 3
+        logits = self.head(x)  # -> (B, num_classes)
+        probs = F.softmax(logits, dim=-1)
+        return logits, probs
+
+
+class ResNet18Vanilla(nn.Module):
+    def __init__(self, in_channels: int, num_classes: int):
+        super().__init__()
+        m = resnet18(weights=None, num_classes=num_classes)
+        # adapter l'entree si in_channels != 3
+        if in_channels != 3:
+            old = m.conv1
+            m.conv1 = nn.Conv2d(
+                in_channels,
+                old.out_channels,
+                kernel_size=old.kernel_size,
+                stride=old.stride,
+                padding=old.padding,
+                bias=old.bias is not None,
+            )
+            nn.init.kaiming_normal_(m.conv1.weight, mode="fan_out", nonlinearity="relu")
+        m.fc = nn.Linear(m.fc.in_features, num_classes)
+        self.net = m
+
+    def forward(self, x):
+        logits = self.net(x)
+        probs = F.softmax(logits, dim=-1)
+        return logits, probs
