@@ -25,3 +25,6 @@ wandb/
 logs/
 figures/
 build/
+
+notebook/data/
+notebook/saved_models/
