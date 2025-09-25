@@ -68,6 +68,72 @@ class OneHotMahalanobis:
         return -torch.einsum("gbc,cd,gbd->gb", diff, self.U, diff)
 
 
+class OneHotRewardNetwork(RewardFunction):
+    """One hot reward network"""
+
+    name = "OneHotRewardNetwork"
+
+    def __init__(self, reward_network: RM.RewardMLP, num_classes: int):
+        self.reward_network = reward_network
+        self.num_classes = num_classes
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_network: Optional[RM.RewardMLP] = None,
+    ):
+        if reward_network is not None:
+            self.reward_network = reward_network
+
+        # y_hat, y: (G,B) class ids
+        one_hot_y_hat = torch.nn.functional.one_hot(
+            y_hat, num_classes=self.num_classes
+        ).float()  # (G,B,C)
+        # yh=F.softmax(y_hat, dim=-1)
+        one_hot_y = torch.nn.functional.one_hot(
+            y, num_classes=self.num_classes
+        ).float()  # (G,B,C)
+
+        input_rn = torch.cat([one_hot_y_hat, one_hot_y], dim=-1)
+        return self.reward_network(input_rn)
+
+
+class FuncOneHotRewardNetwork(RewardFunction):
+    """Functional One hot reward network"""
+
+    name = "FuncOneHotRewardNetwork"
+
+    def __init__(self, reward_model, reward_params, num_classes: int):
+        self.reward_model = reward_model
+        self.reward_params = reward_params
+        self.num_classes = num_classes
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_model=None,
+        reward_params=None,
+    ):
+        if reward_model is not None:
+            self.reward_model = reward_model
+        if reward_params is not None:
+            self.reward_params = reward_params
+
+        # y_hat, y: (G,B) class ids
+        one_hot_y_hat = torch.nn.functional.one_hot(
+            y_hat.long(), num_classes=self.num_classes
+        ).float()  # (G,B,C)
+        # yh=F.softmax(y_hat, dim=-1)
+        one_hot_y = torch.nn.functional.one_hot(
+            y.long(), num_classes=self.num_classes
+        ).float()  # (G,B,C)
+
+        input_rn = torch.cat([one_hot_y_hat, one_hot_y], dim=-1)
+        return functional_call(self.reward_model, self.reward_params, input_rn)
+
+
 class RewardNetwork(RewardFunction):
     """MLP reward function"""
 
