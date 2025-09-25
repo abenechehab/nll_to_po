@@ -38,6 +38,12 @@ from nll_to_po.training.utils import (
     set_seed_everywhere,
 )
 
+IMPLICIT_DIFF_U_VALUES = {
+    "mujoco/halfcheetah/medium-v0": 0.08,
+    "mujoco/halfcheetah/expert-v0": 0.15,
+    "mujoco/halfcheetah/simple-v0": 0.115,
+}
+
 
 @dataclass
 class ExperimentConfig:
@@ -227,7 +233,7 @@ def df_from_metrics(
     return df
 
 
-@ray.remote(num_gpus=0.1)
+@ray.remote(num_gpus=0.2)
 def run_experiment_task(
     *,
     policy: Policy.MLPPolicy,
@@ -272,6 +278,10 @@ def run_experiment_task(
         elif loss_cfg["U_type"] == "full":
             U = loss_cfg["U_full"].to(device)
             U_label = r"PG($U=\frac{\lambda}{2}\Sigma^{-1}$)"
+        elif loss_cfg["U_type"] == "implicit_diff":
+            scale_val = float(loss_cfg["U_scale"])
+            U = scale_val * torch.eye(data_cfg["output_dim"]).to(device)
+            U_label = r"PG($U=U_{implicit}$)"
         else:
             raise ValueError(f"Unknown U_type: {loss_cfg['U_type']}")
 
@@ -456,7 +466,7 @@ def main(args: ExperimentConfig):
     n = data_cfg["output_dim"]
     for exp_idx in range(args.n_experiments):
         for entropy_weight in args.entropy_weights:
-            for U_choice in ["I", "scaled", "full"]:
+            for U_choice in ["I", "scaled", "full", "implicit_diff"]:
                 loss_cfg: Dict = {
                     "type": "PG",
                     "n_generations": args.n_generations,
@@ -474,6 +484,9 @@ def main(args: ExperimentConfig):
                     loss_cfg["U_scale"] = U_scale
                 if U_choice == "full":
                     loss_cfg["U_full"] = (float(entropy_weight) / 2) * sigma_inverse
+                if U_choice == "implicit_diff":
+                    U_scale = IMPLICIT_DIFF_U_VALUES[args.dataset]
+                    loss_cfg["U_scale"] = U_scale
                 enqueue(loss_cfg, exp_idx)
 
     # Collect results
