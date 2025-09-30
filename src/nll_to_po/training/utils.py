@@ -1,37 +1,9 @@
-"""Train a single policy with the specified loss function.
-
-This function creates a deep copy of the input policy and trains it using the provided
-loss function and data. It supports both training and validation phases, with optional
-Weights & Biases logging for metrics tracking.
-
-Args:
-    policy (MLPPolicy): The base policy to copy and train.
-    train_dataloader (torch.utils.data.DataLoader): DataLoader containing training data
-        with (X, y) batches.
-    loss_function (L.LossFunction): Loss function implementing compute_loss method.
-    n_updates (int, optional): Number of training epochs. Defaults to 1.
-    learning_rate (float, optional): Learning rate for Adam optimizer. Defaults to 0.001.
-    val_dataloader (Optional[torch.utils.data.DataLoader], optional): DataLoader for
-        validation data. If None, validation is skipped. Defaults to None.
-    wandb_run (optional): Weights & Biases run object for logging metrics. If None,
-        no logging is performed. Defaults to None.
-
-Returns:
-    MLPPolicy: A trained copy of the input policy.
-
-Notes:
-    - The function applies gradient clipping with max_norm=1e9
-    - Training and validation metrics are logged to wandb if wandb_run is provided
-    - Only scalar metrics (int/float) are logged to wandb
-    - The original policy is not modified (deep copy is used)
-"""
-
 import copy
 from datetime import datetime
 import logging
 import os
 import random
-from typing import Optional
+from typing import Optional, Union, List, Dict
 
 import numpy as np
 import torch
@@ -61,8 +33,51 @@ def train_single_policy(
     device: torch.device = torch.device("cpu"),
     return_dist: bool = False,
     max_grad_norm: float = 1e5,
-):
-    """Train a single policy with the specified loss function"""
+) -> Union[
+    MLPPolicy,
+    Dict[str, List[Union[float, int]]],
+    Dict[str, List[Union[float, int]]],
+    Dict[str, List[Union[float, int]]],
+    List[torch.distributions.Distribution],
+]:
+    """Train a single policy with the specified loss function.
+
+    This function creates a deep copy of the input policy and trains it using the provided
+    loss function and data. It supports both training and validation phases, with optional
+    Weights & Biases logging for metrics tracking.
+
+    Args:
+        policy (MLPPolicy): The base policy to copy and train.
+        loss_function (L.LossFunction): Loss function implementing compute_loss method.
+        train_dataloader (torch.utils.data.DataLoader): DataLoader containing training data
+            with (X, y) batches.
+        val_dataloader (Optional[torch.utils.data.DataLoader], optional): DataLoader for
+            validation data. If None, validation is skipped. Defaults to None.
+        test_dataloader (Optional[torch.utils.data.DataLoader], optional): DataLoader for
+            test data. If None, testing is skipped. Defaults to None.
+        n_updates (int, optional): Number of training epochs. Defaults to 1.
+        learning_rate (float, optional): Learning rate for Adam optimizer. Defaults to 0.001.
+        wandb_run (optional): Weights & Biases run object for logging metrics. If None,
+            no logging is performed. Defaults to None.
+        tensorboard_writer (Optional[SummaryWriter], optional): TensorBoard writer for logging. Defaults to None.
+        logger (Optional[logging.Logger], optional): Logger for info/debug messages. Defaults to None
+        scheduler_patience (int, optional): Patience for learning rate scheduler. If -1,
+            scheduler is disabled. Defaults to -1.
+        early_stopping_patience (int, optional): Patience for early stopping. If -1,
+            early stopping is disabled. Defaults to -1.
+        scheduler_factor (float, optional): Factor for reducing learning rate on plateau. Defaults to 0.5.
+        min_lr (float, optional): Minimum learning rate for scheduler. Defaults to 1e-6.
+        device (torch.device, optional): Device to run training on. Defaults to CPU.
+        return_dist (bool, optional): If True, returns list of distributions from training metrics. Defaults to False.
+        max_grad_norm (float, optional): Maximum norm for gradient clipping. Defaults to 1e5.
+
+    Returns:
+        MLPPolicy: A trained copy of the input policy.
+        Dict[str, List[Union[float, int]]]: Training metrics history.
+        Dict[str, List[Union[float, int]]]: Validation metrics history.
+        Dict[str, List[Union[float, int]]]: Test metrics history.
+        List[torch.distributions.Distribution]: List of distributions from training metrics if return_dist is True, else empty list.
+    """
 
     trained_policy = copy.deepcopy(policy).train().to(device)
     optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
@@ -276,13 +291,13 @@ def train_single_policy(
 
 
 def setup_logger(
-    logger_name,
-    exp_name,
-    log_dir,
-    env_id,
+    logger_name: str,
+    exp_name: str,
+    log_dir: str,
+    env_id: str = "default",
     log_level: str = "INFO",
     create_ts_writer: bool = True,
-) -> tuple:
+) -> Union[logging.Logger, str, Optional[SummaryWriter]]:
     # Clear existing handlers
     root = logging.getLogger(logger_name)
     if root.handlers:
@@ -334,6 +349,8 @@ def setup_logger(
 
 
 def set_seed_everywhere(seed):
+    """Set seed for reproducibility across various libraries and frameworks."""
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

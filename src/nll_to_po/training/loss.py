@@ -1,8 +1,8 @@
-"""Loss functions for training policies in NLL to PO framework."""
+"""Loss functions for training policies with NLL or PG."""
 
 from abc import ABC, abstractmethod
 
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Dict
 
 import torch
 import torch.nn as nn
@@ -24,8 +24,8 @@ class LossFunction(ABC):
     @abstractmethod
     def compute_loss(
         self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor, **kwargs
-    ) -> tuple[torch.Tensor, dict]:
-        """Compute the loss given policy, inputs X, and targets y"""
+    ) -> tuple[torch.Tensor, Dict]:
+        """Compute the loss (torch.Tensor) and metrics (Dict) given policy, inputs X, and targets y"""
         pass
 
 
@@ -68,12 +68,6 @@ class NLL(LossFunction):
                 torch.norm(sigma - std, p="fro", dim=-1).mean().item()
             )
 
-        if sigma.shape[-1] == 2:
-            for idx in range(sigma.shape[-1]):
-                if policy.fixed_logstd:
-                    metrics[f"std_{idx}"] = sigma[idx].mean().item()
-                else:
-                    metrics[f"std_{idx}"] = sigma[:, idx].mean().item()
         return nll, metrics
 
 
@@ -118,6 +112,16 @@ class PG(LossFunction):
         entropy_weight: float = 0.01,
         clip_coef: Optional[float] = None,
     ):
+        """Policy gradient loss with configurable reward and entropy regularization
+
+        Args:
+            reward_fn (R.RewardFunction): Reward function to use
+            n_generations (int, optional): Number of generations for sampling. Defaults to 5.
+            use_rsample (bool, optional): Whether to use reparameterized trick or REINFORCE. Defaults to False.
+            reward_transform (str, optional): Reward transformation to apply. Defaults to "none".
+            entropy_weight (float, optional): Weight for entropy regularization. Defaults to 0.01.
+            clip_coef (Optional[float], optional): Clipping coefficient for policy gradient. Defaults to None.
+        """
         self.n_generations = n_generations
         self.use_rsample = use_rsample
         self.reward_transform = reward_transform
@@ -174,12 +178,6 @@ class PG(LossFunction):
                 torch.norm(sigma - std, p="fro", dim=-1).mean().item()
             )
 
-        if sigma.shape[-1] == 2:
-            for idx in range(sigma.shape[-1]):
-                if policy.fixed_logstd:
-                    metrics[f"std_{idx}"] = sigma[idx].mean().item()
-                else:
-                    metrics[f"std_{idx}"] = sigma[:, idx].mean().item()
         return loss, metrics
 
 
@@ -198,6 +196,16 @@ class FuncPG(LossFunction):
         entropy_weight: float = 0.01,
         clip_coef: Optional[float] = None,
     ):
+        """Policy gradient loss with configurable reward and entropy regularization
+
+        Args:
+            reward_fn (R.RewardFunction): Reward function to use
+            n_generations (int, optional): Number of generations for sampling. Defaults to 5.
+            use_rsample (bool, optional): Whether to use reparameterized trick or REINFORCE. Defaults to False.
+            reward_transform (str, optional): Reward transformation to apply. Defaults to "none".
+            entropy_weight (float, optional): Weight for entropy regularization. Defaults to 0.01.
+            clip_coef (Optional[float], optional): Clipping coefficient for policy gradient. Defaults to None.
+        """
         self.n_generations = n_generations
         self.use_rsample = use_rsample
         self.reward_transform = reward_transform
@@ -259,114 +267,9 @@ class FuncPG(LossFunction):
         return loss, metrics
 
 
-###losses pour le cas multivarie elles sont toutes notee {nom original}_Full_Cov
-
-
-class NLL_Full_Cov(LossFunction):
-    """Negative log-likelihood loss"""
-
-    name = "NLL_Full_Cov"
-
-    def __init__(
-        self, target_mu: torch.Tensor = None, target_sigma: torch.Tensor = None
-    ):
-        super().__init__()
-        self.target_mu = target_mu
-        self.target_sigma = target_sigma
-
-    def compute_loss(self, policy, X, y):
-        # std ici c est scale_tril la triangulaire inf c
-        mean, std = policy(X)
-        # dist = torch.distributions.Normal(mean, std)
-        dist = D.MultivariateNormal(
-            mean, scale_tril=std
-        )  # car je considere des matrices pleines
-        cholesky_part = torch.linalg.cholesky(self.target_sigma)
-        metrics = {
-            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
-            "L2_error": torch.norm(mean.mean(dim=0) - self.target_mu, p=2).item(),
-            "std_error": torch.norm(std[0] - cholesky_part, p="fro").item(),
-            "NLL": -dist.log_prob(y).mean().item(),
-            "dist": D.MultivariateNormal(
-                loc=mean[0].clone(), scale_tril=std[0].clone()
-            ),
-            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
-        }
-        return -dist.log_prob(y).mean(), metrics
-
-
-class PG_Full_Cov(LossFunction):
-    """Policy optimization loss with configurable reward and entropy regularization"""
-
-    name = "PG_Full_Cov"
-
-    def __init__(
-        self,
-        reward_fn: R.RewardFunction,
-        n_generations: int = 5,
-        use_rsample: bool = False,
-        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
-        rbf_gamma: Optional[float] = None,
-        entropy_weight: float = 0.01,
-        target_mu: torch.Tensor = None,
-        target_sigma: torch.Tensor = None,
-    ):
-        self.n_generations = n_generations
-        self.use_rsample = use_rsample
-        self.reward_transform = reward_transform
-        self.rbf_gamma = rbf_gamma
-        self.entropy_weight = entropy_weight
-        self.reward_fn = reward_fn
-        self.target_mu = target_mu
-        self.target_sigma = target_sigma
-
-    def _transform_rewards(self, rewards):
-        """Apply reward transformation"""
-        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
-            return torch.exp(self.rbf_gamma * rewards)
-        elif self.reward_transform == "normalize":
-            rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
-            return rewards - rewards_min
-        else:  # "none"
-            return rewards
-
-    def compute_loss(self, policy, X, y):
-        mean, std = policy(X)
-        # dist = torch.distributions.Normal(mean, std)
-        dist = D.MultivariateNormal(mean, scale_tril=std)
-        if self.use_rsample:
-            samples = dist.rsample((self.n_generations,))
-            rewards = self.reward_fn(y_hat=samples, y=y)
-            rewards = self._transform_rewards(rewards)
-            loss = -rewards.mean()
-        else:
-            samples = dist.sample((self.n_generations,))
-            neg_log_prob = -dist.log_prob(samples)  # .mean() #dim=-1
-            rewards = self.reward_fn(y_hat=samples, y=y)
-            rewards = self._transform_rewards(rewards)
-            loss = (neg_log_prob * rewards).mean()
-
-        loss -= self.entropy_weight * dist.entropy().mean()  # signe -
-        cholesky_lower = torch.linalg.cholesky(self.target_sigma)
-        metrics = {
-            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
-            "L2_error": torch.norm(mean.mean(dim=0) - self.target_mu, p=2).item(),
-            "std_error": torch.norm(std[0] - cholesky_lower, p="fro").item(),
-            "NLL": -dist.log_prob(y).mean().item(),
-            "dist": D.MultivariateNormal(
-                loc=mean[0].clone(), scale_tril=std[0].clone()
-            ),
-            "entropy": dist.entropy().mean().item(),
-            "sigma_norm": torch.norm(std, p="fro", dim=-1).mean().item(),
-            "loss": loss.item(),
-        }
-        return loss, metrics
-
-
-###Classifications loss###
-
-
 class NLL_Classification(LossFunction):
+    """Negative log-likelihood loss for classification (cross-entropy)."""
+
     name = "NLL_ClS"
 
     def compute_loss(self, policy, X, y, mu=None, std=None):
@@ -374,7 +277,6 @@ class NLL_Classification(LossFunction):
         loss = F.cross_entropy(logits, y)  # (B, C), y: (B,) long
 
         with torch.no_grad():
-            # probs = torch.softmax(logits, dim=-1)
             pred = probs.argmax(dim=-1)
             acc = (pred == y).float().mean().item()
             ent = (-(probs * probs.clamp_min(1e-12).log()).sum(-1)).mean().item()
@@ -384,6 +286,8 @@ class NLL_Classification(LossFunction):
 
 
 class FuncNLL_Classification(LossFunction):
+    """Functional Negative log-likelihood loss for classification (cross-entropy)."""
+
     name = "FuncNLL_ClS"
 
     def compute_loss(self, policy_model, policy_params, X, y, mu=None, std=None):
@@ -400,12 +304,10 @@ class FuncNLL_Classification(LossFunction):
         return loss, metrics
 
 
-class PO_Entropy_Classification(LossFunction):
-    """Policy gradient with entropy regularization for classification.
-    Policy outputs (logits, probs); distribution is Categorical(logits=logits).
-    """
+class PG_Classification(LossFunction):
+    """Policy gradient loss with configurable reward and entropy regularization for classification"""
 
-    name = "PO_ENT_CL"
+    name = "PG_ClS"
 
     def __init__(
         self,
@@ -417,12 +319,23 @@ class PO_Entropy_Classification(LossFunction):
         entropy_weight: float = 0.01,
         temperature: float = 1.0,
     ):
+        """Policy gradient loss with configurable reward and entropy regularization
+
+        Args:
+            reward_fn (R.RewardFunction): Reward function to use
+            n_generations (int, optional): Number of generations for sampling. Defaults to 5.
+            use_rsample (bool, optional): Whether to use reparameterized trick or REINFORCE. Defaults to False.
+            reward_transform (str, optional): Reward transformation to apply. Defaults to "none".
+            entropy_weight (float, optional): Weight for entropy regularization. Defaults to 0.01.
+            temperature (float, optional): Temperature for softmax. Defaults to 1.0.
+        """
         self.n_generations = n_generations
         self.use_rsample = use_rsample
         self.reward_transform = reward_transform
         self.rbf_gamma = rbf_gamma
         self.entropy_weight = entropy_weight
         self.reward_fn = reward_fn
+        # TODO: temperature is not used yet
         self.temperature = temperature
 
     def _transform_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
@@ -469,12 +382,10 @@ class PO_Entropy_Classification(LossFunction):
         return loss, metrics
 
 
-class FuncPO_Entropy_Classification(LossFunction):
-    """(functional) Policy gradient with entropy regularization for classification.
-    Policy outputs (logits, probs); distribution is Categorical(logits=logits).
-    """
+class FuncPG_Classification(LossFunction):
+    """Functional Policy gradient loss with configurable reward and entropy regularization for classification"""
 
-    name = "Func_PO_ENT_CL"
+    name = "Func_PG_ClS"
 
     def __init__(
         self,
@@ -486,12 +397,23 @@ class FuncPO_Entropy_Classification(LossFunction):
         entropy_weight: float = 0.01,
         temperature: float = 1.0,
     ):
+        """Policy gradient loss with configurable reward and entropy regularization
+
+        Args:
+            reward_fn (R.RewardFunction): Reward function to use
+            n_generations (int, optional): Number of generations for sampling. Defaults to 5.
+            use_rsample (bool, optional): Whether to use reparameterized trick or REINFORCE. Defaults to False.
+            reward_transform (str, optional): Reward transformation to apply. Defaults to "none".
+            entropy_weight (float, optional): Weight for entropy regularization. Defaults to 0.01.
+            temperature (float, optional): Temperature for softmax. Defaults to 1.0.
+        """
         self.n_generations = n_generations
         self.use_rsample = use_rsample
         self.reward_transform = reward_transform
         self.rbf_gamma = rbf_gamma
         self.entropy_weight = entropy_weight
         self.reward_fn = reward_fn
+        # TODO: temperature is not used yet
         self.temperature = temperature
 
     def _transform_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
@@ -506,10 +428,6 @@ class FuncPO_Entropy_Classification(LossFunction):
     def compute_loss(
         self, policy_model, policy_params, X, y, mu=None, std=None, **kwargs
     ):
-        """
-        policy(X): returns logits and probs of shape (B, C)
-        y: LongTensor of shape (B,) with class indices
-        """
         logits, probs = functional_call(policy_model, policy_params, (X,))
         dist = D.Categorical(logits=logits)
 

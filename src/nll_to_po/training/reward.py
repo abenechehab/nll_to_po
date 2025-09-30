@@ -16,7 +16,7 @@ class RewardFunction(ABC):
 
     @abstractmethod
     def __call__(self, y_hat: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
-        """Compute the reward given generation y, and groundtruth y_star"""
+        """Compute the reward given generation y_hat, and groundtruth y"""
         pass
 
 
@@ -29,9 +29,9 @@ class Mahalanobis(RewardFunction):
         self.matrix = matrix
         first_diag_element = self.matrix[0, 0]
         desc = (
-            r"$I$"
+            r"$\mathrm{I}$"
             if first_diag_element == 1.0
-            else r"$\frac{\lambda n}{2 Tr(\Sigma)}I$"
+            else r"$\frac{\lambda n}{2 Tr(\Sigma)}\mathrm{I}$"
         )
         self.name = f"{self.name}({desc})"
 
@@ -52,13 +52,16 @@ class Mahalanobis(RewardFunction):
             )
 
 
-class OneHotMahalanobis:
+class OneHotMahalanobis(RewardFunction):
+    """Mahalanobis reward on one-hot vectors: - (y-y_star)^T M (y-y_star)"""
+
+    name = "OneHotMahalanobis"
+
     def __init__(self, U: torch.Tensor, num_classes: int):
         self.U = U  # (C, C), SPD
         self.C = num_classes
 
     def __call__(self, y_hat, y):
-        # print(y_hat)
         # y_hat, y: (G,B) class ids
         yh = torch.nn.functional.one_hot(y_hat, num_classes=self.C).float()  # (G,B,C)
         # yh=F.softmax(y_hat, dim=-1)
@@ -68,8 +71,62 @@ class OneHotMahalanobis:
         return -torch.einsum("gbc,cd,gbd->gb", diff, self.U, diff)
 
 
+class RewardNetwork(RewardFunction):
+    """MLP (or any other) reward function"""
+
+    name = "RewardNetwork"
+
+    def __init__(self, reward_network: RM.RewardMLP):
+        self.reward_network = reward_network
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_network: Optional[RM.RewardMLP] = None,
+    ):
+        if reward_network is not None:
+            self.reward_network = reward_network
+
+        # Ensure both tensors have the same number of dimensions
+        if y_hat.dim() == 3 and y.dim() == 2:
+            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
+
+        input_rn = torch.cat([y_hat, y], dim=-1)
+        return self.reward_network(input_rn)
+
+
+class FuncRewardNetwork(RewardFunction):
+    """Functional MLP reward function"""
+
+    name = "FuncRewardNetwork"
+
+    def __init__(self, reward_model, reward_params):
+        self.reward_model = reward_model
+        self.reward_params = reward_params
+
+    def __call__(
+        self,
+        y_hat: torch.Tensor,
+        y: torch.Tensor,
+        reward_model=None,
+        reward_params=None,
+    ):
+        if reward_model is not None:
+            self.reward_model = reward_model
+        if reward_params is not None:
+            self.reward_params = reward_params
+
+        # Ensure both tensors have the same number of dimensions
+        if y_hat.dim() == 3 and y.dim() == 2:
+            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
+
+        input_rn = torch.cat([y_hat, y], dim=-1)
+        return functional_call(self.reward_model, self.reward_params, input_rn)
+
+
 class OneHotRewardNetwork(RewardFunction):
-    """One hot reward network"""
+    """Applies a given reward network to one hot encodings of y_hat and y"""
 
     name = "OneHotRewardNetwork"
 
@@ -131,58 +188,4 @@ class FuncOneHotRewardNetwork(RewardFunction):
         ).float()  # (G,B,C)
 
         input_rn = torch.cat([one_hot_y_hat, one_hot_y], dim=-1)
-        return functional_call(self.reward_model, self.reward_params, input_rn)
-
-
-class RewardNetwork(RewardFunction):
-    """MLP reward function"""
-
-    name = "RewardNetwork"
-
-    def __init__(self, reward_network: RM.RewardMLP):
-        self.reward_network = reward_network
-
-    def __call__(
-        self,
-        y_hat: torch.Tensor,
-        y: torch.Tensor,
-        reward_network: Optional[RM.RewardMLP] = None,
-    ):
-        if reward_network is not None:
-            self.reward_network = reward_network
-
-        # Ensure both tensors have the same number of dimensions
-        if y_hat.dim() == 3 and y.dim() == 2:
-            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
-
-        input_rn = torch.cat([y_hat, y], dim=-1)
-        return self.reward_network(input_rn)
-
-
-class FuncRewardNetwork(RewardFunction):
-    """Functional MLP reward function"""
-
-    name = "FuncRewardNetwork"
-
-    def __init__(self, reward_model, reward_params):
-        self.reward_model = reward_model
-        self.reward_params = reward_params
-
-    def __call__(
-        self,
-        y_hat: torch.Tensor,
-        y: torch.Tensor,
-        reward_model=None,
-        reward_params=None,
-    ):
-        if reward_model is not None:
-            self.reward_model = reward_model
-        if reward_params is not None:
-            self.reward_params = reward_params
-
-        # Ensure both tensors have the same number of dimensions
-        if y_hat.dim() == 3 and y.dim() == 2:
-            y = y.unsqueeze(0).expand(y_hat.size(0), -1, -1)
-
-        input_rn = torch.cat([y_hat, y], dim=-1)
         return functional_call(self.reward_model, self.reward_params, input_rn)
