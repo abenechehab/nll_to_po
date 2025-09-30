@@ -5,12 +5,14 @@ requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 name = "NLL_TO_PO"
 authors = [
   {name = "Abdelhakim Benechehab", email = "abdelhakim.benechehab@gmail.com"},
+  {name = "Gabriel Singer", email = "gabrielsinger2@gmail.com"},
 ]
 maintainers = [
   {name = "Abdelhakim Benechehab", email = "abdelhakim.benechehab@gmail.com"},
+  {name = "Gabriel Singer", email = "gabrielsinger2@gmail.com"},
 ]
 dynamic = ["version", "readme", "dependencies"]
-description = "NLL_TO_PO"
+description = "Official implementation of 'From Data to Rewards: a Bilevel Optimization Perspective on Maximum Likelihood Estimation' "
 requires-python = ">=3.12"
 keywords = ["Policy optimization"]
 classifiers = [
@@ -23,10 +25,10 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ['ruff', 'pre-commit', 'black', 'detect-secrets']
-mbrl = ['minari[h5py]', 'ray[default]', 'pyarrow']
-classif = ['scikit-learn']
-bilevel = ['torchopt']
-llm = ['transformers', 'accelerate']
+mbrl = ['minari[h5py]==0.5.3', 'ray[default]==2.48.0', 'pyarrow==21.0.0']
+classif = ['scikit-learn==1.7.1', 'ucimlrepo==0.0.7']
+bilevel = ['torchopt==0.7.3']
+llm = ['transformers==4.56.1', 'accelerate==1.10.1']
 
 [tool.setuptools]
 license-files = ['LICEN[CS]E*', 'COPYING*', 'NOTICE*', 'AUTHORS*']
