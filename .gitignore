@@ -28,3 +28,4 @@ build/
 
 notebook/data/
 notebook/saved_models/
+notebook/internal/
