@@ -6,7 +6,7 @@ from transformers import RobertaTokenizer, RobertaModel
 
 
 class RewardMLP(nn.Module):
-    """Multi-layer perceptron reward network with configurable architecture."""
+    """Multi-layer perceptron reward network."""
 
     def __init__(
         self,
@@ -25,9 +25,6 @@ class RewardMLP(nn.Module):
             nn.Linear(dims[-1], 1),
         )
 
-        # sigma(y_hat^T W + b)
-        # sigma((y-y_hat)^T W)
-
     def forward(self, state):
         """Forward pass to compute mean and standard deviation."""
         common = self.net(state)
@@ -36,7 +33,7 @@ class RewardMLP(nn.Module):
 
 
 class RewardMLPMahalanobis(nn.Module):
-    """Multi-layer perceptron reward network with configurable architecture."""
+    """Mahalanobis matrix parametrized reward. Full or diagonal."""
 
     def __init__(
         self,
@@ -62,6 +59,8 @@ class RewardMLPMahalanobis(nn.Module):
 
 
 class RewardMLPMahalanobisDiag(nn.Module):
+    """Single parameter Mahalanobis matrix reward: u * I_n."""
+
     def __init__(
         self,
         input_dim: int,
@@ -88,6 +87,8 @@ class RewardMLPMahalanobisDiag(nn.Module):
 
 
 class EmbeddingReward(nn.Module):
+    """Embedding-based reward function with an MLP encoder."""
+
     def __init__(
         self,
         input_dim: int,
@@ -117,6 +118,8 @@ class EmbeddingReward(nn.Module):
 
 
 class EmbeddingMahalanobisReward(nn.Module):
+    """Embedding-based Mahalanobis reward function with an MLP encoder."""
+
     def __init__(
         self,
         input_dim: int,
@@ -157,6 +160,8 @@ class EmbeddingMahalanobisReward(nn.Module):
 
 
 class BertEmbeddingMahalanobisReward(nn.Module):
+    """BERT embedding-based Mahalanobis reward function, when y, y_hat are sentences."""
+
     def __init__(
         self,
         train_encoder: bool = False,  # Freezing BERT's weights
@@ -192,14 +197,14 @@ class BertEmbeddingMahalanobisReward(nn.Module):
             isinstance(y, list) and isinstance(y_hat, list) and len(y) == len(y_hat)
         ), "Inputs must be lists of strings of same length"
 
-        inputs = self.tokenizer(
-            y + y_hat,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-        )
         with torch.no_grad():
+            inputs = self.tokenizer(
+                y + y_hat,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+            )
             outputs = self.bert_model(**inputs)
         # exclude padding tokens
         o = (outputs.last_hidden_state * inputs.attention_mask.unsqueeze(-1)).mean(
