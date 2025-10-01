@@ -1,18 +1,3 @@
-"""
-Parallel experiment runner for model-based RL-style supervised training using Ray.
-
-This script is a refactor of the notebook `notebook/mbrl.ipynb` into a CLI.
-It:
-- Loads Minari datasets and prepares train/val splits
-- Builds a policy and trains it under different losses (MSE, NLL, PG variants)
-- Runs experiments in parallel with Ray (default 0.1 GPU per task)
-- Saves metrics for each run to Parquet for efficient storage
-
-Notes:
-- Visualizations are intentionally omitted.
-- Requires optional extras: `pip install -e .[mbrl]` (adds minari, ray, pyarrow)
-"""
-
 import os
 import json
 import logging
@@ -47,43 +32,78 @@ IMPLICIT_DIFF_U_VALUES = {
 
 @dataclass
 class ExperimentConfig:
-    # Data args
+    """
+    Parallel experiment runner for model-based RL-style supervised training using Ray.
+
+    It:
+    - Loads Minari datasets and prepares train/val splits
+    - Builds a policy and trains it under different losses (MSE, NLL, PG variants)
+    - Runs experiments in parallel with Ray (default 0.2 GPU per task)
+    - Saves metrics for each run to Parquet for efficient storage
+
+    Notes:
+    - Requires optional extras: `pip install -e .[mbrl]` (adds minari, ray, pyarrow)
+    """
+
     dataset: str = "mujoco/halfcheetah/medium-v0"
+    """Dataset name from those available at Minari hub, e.g. "mujoco/halfcheetah/medium-v0"."""
     train_size: float = 0.5
+    """Train/val/test split proportions (train_size + test_size < 1.0)."""
     test_size: float = 0.3
+    """Train/val/test split proportions (train_size + test_size < 1.0)."""
     data_proportion: float = 0.1
+    """Proportion of the dataset to use (for quicker experiments)."""
     batch_size: int = -1
+    """Batch size for training; -1 for full-batch."""
 
-    # Model/optim args
     hidden_sizes: List[int] = field(default_factory=lambda: [64, 64])
+    """Hidden layer sizes for the policy network."""
     fixed_logstd: bool = False
+    """Whether to fix the policy log standard deviation or learn it."""
     n_updates: int = 200
+    """Number of training updates per experiment."""
     learning_rate: float = 0.001
+    """Learning rate for Adam optimizer."""
     early_stopping_patience: int = -1
+    """Early stopping patience; -1 to disable."""
     scheduler_patience: int = -1
+    """LR scheduler patience; -1 to disable."""
     bounded_sigma: bool = False
+    """Whether to use bounded sigma policy or standard."""
     max_grad_norm: float = 10.0
+    """Max gradient norm for clipping; use large value to effectively disable."""
 
-    # PG-specific
     n_generations: int = 5
+    """Number of generations for PG loss."""
     pg_rsample: bool = False
+    """Whether to use rsample (True) or REINFORCE (False) in PG loss."""
     reward_transform: str = "none"
+    """Reward transformation for PG loss: "none", "rbf", or "normalize"."""
     entropy_weights: List[float] = field(
         default_factory=lambda: [
             round(lamda, 2) for lamda in 5 * np.logspace(-1, 0, num=7)
         ]
     )
+    """List of entropy weights to sweep over for PG loss."""
     clip_coef: Optional[float] = None
+    """Clipping coefficient for PG loss; None to disable."""
 
-    # Infra/logging
     n_experiments: int = 10
+    """Number of random-seed experiments to run per configuration."""
     use_wandb: bool = False
+    """Whether to use Weights & Biases for logging."""
     wandb_project: str = "mbrl"
+    """WandB project name."""
     env_id: str = "mbrl"
+    """Environment ID for logging purposes."""
     log_dir: str = "logs"
+    """Directory to save logs and TensorBoard files."""
     results_dir: str = "logs/mbrl_results"
+    """Directory to save Parquet results."""
     ray_address: Optional[str] = None
+    """Ray cluster address; None for local."""
     merge_results: bool = True
+    """Whether to merge individual Parquet files into a single file after experiments."""
 
 
 def generate_data_minari(
