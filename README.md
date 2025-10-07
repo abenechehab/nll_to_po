@@ -134,6 +134,9 @@ results_path = "../logs/mbrl_results/results_mujoco_halfcheetah_medium-v0/result
 results_df = pd.read_parquet(results_path)
 ```
 
+### Bonus: Explicit differentiation solver on synthetic data
+* [`notebook/explicit_gradient.ipynb`](notebook/explicit_gradient.ipynb)
+
 ## ⚖️ License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
