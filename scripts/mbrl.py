@@ -2,14 +2,13 @@ import os
 import json
 import logging
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 import torch
 
-import minari
 import ray
 import tyro
 from datetime import datetime
@@ -17,6 +16,7 @@ from datetime import datetime
 import nll_to_po.models.dn_policy as Policy
 import nll_to_po.training.loss as L
 import nll_to_po.training.reward as R
+import nll_to_po.training.data as Data
 from nll_to_po.training.utils import (
     train_single_policy,
     setup_logger,
@@ -105,116 +105,8 @@ class ExperimentConfig:
     merge_results: bool = True
     """Whether to merge individual Parquet files into a single file after experiments."""
 
-
-def generate_data_minari(
-    dataset_name: str,
-    train_size: float = 0.8,
-    data_proportion: float = 1.0,
-    batch_size: int = -1,
-    test_size: float = 0.1,
-) -> Tuple[
-    torch.utils.data.DataLoader,
-    torch.utils.data.DataLoader,
-    torch.utils.data.DataLoader,
-    Dict[str, int],
-]:
-    """Create train/val/test DataLoaders from a Minari dataset.
-
-    Returns: (train_loader, val_loader, test_loader, {input_dim, output_dim})
-    """
-    assert train_size + test_size <= 1.0, (
-        "train_size + test_size must be <= 1.0 (for validation)"
-    )
-
-    seed = np.random.randint(0, 1_000_000)
-    set_seed_everywhere(seed=int(seed))
-
-    dataset = minari.load_dataset(dataset_name, download=True)
-    dataset.set_seed(seed=int(seed))
-
-    observations = []
-    actions = []
-    next_observations = []
-    for episode in dataset:
-        observations.append(episode.observations[:-1])
-        actions.append(episode.actions)
-        next_observations.append(episode.observations[1:])
-    observations = np.concatenate(observations, axis=0)
-    actions = np.concatenate(actions, axis=0)
-    next_observations = np.concatenate(next_observations, axis=0)
-
-    obs_dim = observations.shape[1]
-    action_dim = actions.shape[1]
-
-    X = torch.tensor(
-        np.concatenate([observations, actions], axis=1), dtype=torch.float32
-    )
-    y = torch.tensor(next_observations, dtype=torch.float32)
-
-    # Shuffle and select subset
-    total_size = len(X)
-    indices = torch.randperm(total_size)
-    selected_size = int(total_size * data_proportion)
-    selected_indices = indices[:selected_size]
-
-    X = X[selected_indices]
-    y = y[selected_indices]
-
-    # Train/val/test split
-    trn_size = int(len(X) * train_size)
-    test_size_actual = int(len(X) * test_size)
-    val_size = len(X) - trn_size - test_size_actual
-
-    X_train, X_val, X_test = (
-        X[:trn_size],
-        X[trn_size : trn_size + val_size],
-        X[trn_size + val_size :],
-    )
-    y_train, y_val, y_test = (
-        y[:trn_size],
-        y[trn_size : trn_size + val_size],
-        y[trn_size + val_size :],
-    )
-
-    # using y as mu and sigma zero
-    train_dataset = torch.utils.data.TensorDataset(
-        X_train, y_train, y_train, torch.zeros_like(y_train)
-    )
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size if batch_size > 0 else X_train.shape[0],
-        shuffle=True,
-    )
-    val_dataset = torch.utils.data.TensorDataset(
-        X_val, y_val, y_val, torch.zeros_like(y_val)
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=batch_size if batch_size > 0 else X_val.shape[0],
-        shuffle=False,
-    )
-    test_dataset = torch.utils.data.TensorDataset(
-        X_test, y_test, y_test, torch.zeros_like(y_test)
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=batch_size if batch_size > 0 else X_test.shape[0],
-        shuffle=False,
-    )
-
-    return (
-        train_loader,
-        val_loader,
-        test_loader,
-        {
-            "input_dim": obs_dim + action_dim,
-            "output_dim": obs_dim,
-            "dataset_name": "_".join(dataset_name.split("/")),
-            "train_size": train_size,
-            "data_proportion": data_proportion,
-            "batch_size": batch_size,
-        },
-    )
+    seed: int = 7
+    """Random seed for data splitting and shuffling."""
 
 
 def estimate_trace_sigma(train_loader: torch.utils.data.DataLoader) -> float:
@@ -402,6 +294,9 @@ def run_experiment_task(
 
 
 def main(args: ExperimentConfig):
+    set_seed_everywhere(args.seed)
+    print(f"Seed: {args.seed}")
+
     # Ensure Ray initialized
     ray.init(
         address=args.ray_address,
@@ -411,12 +306,13 @@ def main(args: ExperimentConfig):
     )
 
     # Prepare data
-    train_loader, val_loader, test_loader, data_cfg = generate_data_minari(
+    train_loader, val_loader, test_loader, data_cfg = Data.generate_data_minari(
         dataset_name=args.dataset,
         train_size=args.train_size,
         test_size=args.test_size,
         data_proportion=args.data_proportion,
         batch_size=args.batch_size,
+        seed=args.seed,
     )
     # Estimate data covariance
     trace_sigma, sigma_inverse = estimate_trace_sigma(train_loader)
