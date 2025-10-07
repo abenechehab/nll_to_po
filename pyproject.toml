@@ -26,7 +26,7 @@ classifiers = [
 [project.optional-dependencies]
 dev = ['ruff', 'pre-commit', 'black', 'detect-secrets']
 mbrl = ['minari[h5py]==0.5.3', 'ray[default]==2.48.0', 'pyarrow==21.0.0']
-classif = ['scikit-learn==1.7.1', 'ucimlrepo==0.0.7']
+classif = ['scikit-learn==1.7.1', 'ucimlrepo==0.0.7', 'tabulate==0.9.0']
 bilevel = ['torchopt==0.7.3']
 llm = ['transformers==4.56.1', 'accelerate==1.10.1']
 
