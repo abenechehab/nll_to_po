@@ -116,15 +116,11 @@ def sample_batch_policy(policy_params, prompts_input_ids, gen_len=16):
         actions_list.append(actions)
         generated = torch.cat([generated, actions], dim=1)
 
-        # after building `generated` tensor (B, T_total)
-    with torch.no_grad():
-        generated_texts = [
-            tokenizer.decode(
-                g.detach().clone().cpu().tolist(), skip_special_tokens=True
-            )
-            for g in generated
-        ]
-
+    # after building `generated` tensor (B, T_total)
+    generated_cpu = generated.detach().cpu()
+    generated_texts = [
+        tokenizer.decode(g.tolist(), skip_special_tokens=True) for g in generated_cpu
+    ]
     per_step_logprobs = torch.cat(per_step_logprobs, dim=1)  # [B, gen_len]
     actions = torch.cat(actions_list, dim=1)  # [B, gen_len]
     return (
