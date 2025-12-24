@@ -3,17 +3,18 @@ import time
 from datetime import datetime
 import re
 
+from peft import LoraConfig
 import torch
 
-from transformers import AutoProcessor
+from transformers import AutoProcessor, BitsAndBytesConfig
 from datasets import load_dataset
-from trl import GRPOTrainer, GRPOConfig, get_peft_config, ModelConfig
+from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
 
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
 SYSTEM_PROMPT = "You are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. "
-MODEL_NAME = "Qwen/Qwen3-8B"
+MODEL_NAME = "Qwen/Qwen3-32B"  # "openai/gpt-oss-20b"
 
 
 # #################################
@@ -157,39 +158,54 @@ output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/trl-grpo-{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
 # our model we are going to use as policy
-model_config = ModelConfig(
-    model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
-    torch_dtype="bfloat16",
-    attn_implementation="flash_attention_2",
-    use_peft=True,
-    load_in_4bit=True,
+# model_config = ModelConfig(
+#     model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
+#     torch_dtype="bfloat16",
+#     attn_implementation="flash_attention_2",
+#     use_peft=True,
+#     load_in_4bit=True,
+#     target_modules=["q_proj", "v_proj"],
+# )
+
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,  # Load the model in 4-bit precision to save memory
+    bnb_4bit_compute_dtype=torch.float16,  # Data type used for internal computations in quantization
+    bnb_4bit_use_double_quant=True,  # Use double quantization to improve accuracy
+    bnb_4bit_quant_type="nf4",  # Type of quantization. "nf4" is recommended for recent LLMs
+)
+
+peft_config = LoraConfig(
+    r=8,
+    lora_alpha=32,
+    lora_dropout=0.1,
+    target_modules=["q_proj", "v_proj"],
 )
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
-    learning_rate=5e-7,
+    learning_rate=5e-5,
     # num_train_epochs=1,
     max_steps=100,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
     lr_scheduler_type="cosine",
     # Parameters that control the data preprocessing
-    per_device_train_batch_size=2,
+    per_device_train_batch_size=8,
     max_completion_length=1024,  # default: 256            # Max completion length produced during training
     max_prompt_length=256,  # default: 512                # Max prompt length of the input prompt used for generation during training
     # GRPO specific parameters
-    num_generations=2,  # 2, # default: 8                  # Number of generations produced during training for comparison
-    beta=0.001,
+    num_generations=8,  # 2, # default: 8                  # Number of generations produced during training for comparison
+    # beta=0.001,
     gradient_accumulation_steps=1,
-    gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": False},
+    gradient_checkpointing=False,
+    # gradient_checkpointing_kwargs={"use_reentrant": False},
     fp16=False,
     bf16=True,
     # Parameters related to reporting and saving
     output_dir=output_dir,  # Where to save model checkpoints and logs
-    logging_steps=10,  # Log training metrics every N steps
+    logging_steps=1,  # Log training metrics every N steps
     report_to="tensorboard",  # Experiment tracking tool
     # trackio_space_id = output_dir,
     # Hub integration
-    push_to_hub=True,
+    push_to_hub=False,
     log_completions=True,
 )
 
@@ -199,7 +215,9 @@ trainer = GRPOTrainer(
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=test_dataset,
-    peft_config=get_peft_config(model_config),
+    # peft_config=get_peft_config(model_config),
+    peft_config=peft_config,
+    # quantization_config=quantization_config,
 )
 
 # ##########################
