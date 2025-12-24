@@ -1,6 +1,6 @@
 """Basic density network policy model."""
 
-from typing import Union
+from typing import List, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,7 +13,7 @@ class MLPPolicy(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        hidden_sizes: list,
+        hidden_sizes: List[int],
         fixed_logstd: bool = False,
         use_batchnorm: bool = False,
         use_layernorm: bool = False,
@@ -75,6 +75,27 @@ class MulticlassLogisticRegression(nn.Module):
         logits = self.linear(x)  # (B, C)
         probs = F.softmax(logits, dim=-1)  # (B, C)
         return logits, probs
+
+
+class MulticlassMLP(nn.Module):
+    """Multiclass MLP policy."""
+
+    def __init__(
+        self, input_dim=785, hidden_sizes: List[int] = [512, 256], output_dim=10
+    ):
+        super().__init__()
+        layers = []
+        dims = [input_dim] + hidden_sizes
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.ReLU())
+        self.net = nn.Sequential(*layers)
+        self.logits = nn.Linear(dims[-1], output_dim)
+
+    def forward(self, x):
+        x = self.net(x)
+        logits = self.logits(x)
+        return logits, F.softmax(logits, dim=-1)
 
 
 class MLPPolicyBounded(nn.Module):
