@@ -1,20 +1,42 @@
 import os
 import time
 from datetime import datetime
-import re
 
 from peft import LoraConfig
 import torch
 
-from transformers import AutoProcessor, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesConfig
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
+
+from nll_to_po.training.reward import equation_reward_func, bert_embedding_reward_func
 
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
 SYSTEM_PROMPT = "You are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. "
-MODEL_NAME = "Qwen/Qwen3-32B"  # "openai/gpt-oss-20b"
+MODEL_NAME = "Qwen/Qwen3-1.7B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+DATASET_NAME = "Jiayi-Pan/Countdown-Tasks-3to4"
+DATASET_SIZE = 490364  # 490364
+
+
+# ###########################################
+# ******** Load Model & Tokenizer ***********
+# ###########################################
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+    dtype="bfloat16",  # Change to bfloat16 if GPU has support
+    use_cache=True,  # Whether to cache attention outputs to speed up inference
+    # quantization_config=BitsAndBytesConfig(
+    #     load_in_4bit=True,                        # Load the model in 4-bit precision to save memory
+    #     # bnb_4bit_compute_dtype=torch.float16,     # Data type used for internal computations in quantization
+    #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
+    #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
+    # )
+)
+tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
 
 # #################################
@@ -22,13 +44,9 @@ MODEL_NAME = "Qwen/Qwen3-32B"  # "openai/gpt-oss-20b"
 # #################################
 
 # Load dataset from Hugging Face Hub
-dataset_id = "Jiayi-Pan/Countdown-Tasks-3to4"
-dataset = load_dataset(dataset_id, split="train")
+dataset = load_dataset(DATASET_NAME, split="train")
 # select a random subset of 50k samples
-dataset = dataset.shuffle(seed=42).select(range(50000))
-
-# Load tokenizer from Hugging Face Hub to format the dataset to our "r1" prompt
-tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
+dataset = dataset.shuffle(seed=42).select(range(DATASET_SIZE))
 
 
 # gemerate r1 prompt with a prefix for the model to already start with the thinking process
@@ -63,138 +81,45 @@ test_dataset = train_test_split["test"]
 
 print(f"one training example: {train_dataset[0]}")
 
-# #################################
-# ******* Reward functions ********
-# #################################
-
-
-def format_reward_func(completions, target, **kwargs):
-    """
-    Format: <think>...</think><answer>...</answer>
-    Args:
-        completions (list[str]): Generated outputs
-        target (list[str]): Expected answers
-
-      Returns:
-          list[float]: Reward scores
-    """
-    rewards = []
-
-    for completion, gt in zip(completions, target):
-        try:
-            # add synthetic <think> as its already part of the prompt and prefilled for the assistant to more easily match the regex
-            completion = "<think>" + completion
-            # Check if the format is correct
-            regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
-
-            match = re.search(regex, completion, re.DOTALL)
-            # if the format is not correct, reward is 0
-            if match is None or len(match.groups()) != 2:
-                rewards.append(0.0)
-            else:
-                rewards.append(1.0)
-        except Exception:
-            rewards.append(0.0)
-    return rewards
-
-
-def equation_reward_func(completions, target, nums, **kwargs):
-    """
-    Evaluates completions based on:
-    2. Mathematical correctness of the answer
-
-    Args:
-        completions (list[str]): Generated outputs
-        target (list[str]): Expected answers
-        nums (list[str]): Available numbers
-
-    Returns:
-        list[float]: Reward scores
-    """
-    rewards = []
-    for completion, gt, numbers in zip(completions, target, nums):
-        try:
-            # add synthetic <think> as its already part of the prompt and prefilled for the assistant to more easily match the regex
-            completion = "<think>" + completion
-            # Check if the format is correct
-            match = re.search(r"<answer>(.*?)<\/answer>", completion)
-            if match is None:
-                rewards.append(0.0)
-                continue
-            # Extract the "answer" part from the completion
-            equation = match.group(1).strip()
-            # Extract all numbers from the equation
-            used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
-
-            # Check if all numbers are used exactly once
-            if sorted(used_numbers) != sorted(numbers):
-                rewards.append(0.0)
-                continue
-            # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
-            allowed_pattern = r"^[\d+\-*/().\s]+$"
-            if not re.match(allowed_pattern, equation):
-                rewards.append(0.0)
-                continue
-
-            # Evaluate the equation with restricted globals and locals
-            result = eval(equation, {"__builti'ns__": None}, {})
-            # Check if the equation is correct and matches the ground truth
-            if abs(float(result) - float(gt)) < 1e-5:
-                rewards.append(1.0)
-            else:
-                rewards.append(0.0)
-        except Exception:
-            # If evaluation fails, reward is 0
-            rewards.append(0.0)
-    return rewards
-
 
 # #######################################
 # ******* Trainer (GRPO) config *********
 # #######################################
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/trl-grpo-{timestamp}"
+output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/[OUR]trl-grpo-{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
-
-# our model we are going to use as policy
-# model_config = ModelConfig(
-#     model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
-#     torch_dtype="bfloat16",
-#     attn_implementation="flash_attention_2",
-#     use_peft=True,
-#     load_in_4bit=True,
-#     target_modules=["q_proj", "v_proj"],
-# )
-
-quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,  # Load the model in 4-bit precision to save memory
-    bnb_4bit_compute_dtype=torch.float16,  # Data type used for internal computations in quantization
-    bnb_4bit_use_double_quant=True,  # Use double quantization to improve accuracy
-    bnb_4bit_quant_type="nf4",  # Type of quantization. "nf4" is recommended for recent LLMs
-)
 
 peft_config = LoraConfig(
     r=8,
     lora_alpha=32,
     lora_dropout=0.1,
-    target_modules=["q_proj", "v_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
+    # target_modules=["q_proj", "v_proj"],
 )
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
     learning_rate=5e-5,
-    # num_train_epochs=1,
-    max_steps=100,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
+    # num_train_epochs=10,
+    max_steps=200,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
     lr_scheduler_type="cosine",
     # Parameters that control the data preprocessing
-    per_device_train_batch_size=8,
+    per_device_train_batch_size=1,
     max_completion_length=1024,  # default: 256            # Max completion length produced during training
     max_prompt_length=256,  # default: 512                # Max prompt length of the input prompt used for generation during training
     # GRPO specific parameters
     num_generations=8,  # 2, # default: 8                  # Number of generations produced during training for comparison
     # beta=0.001,
-    gradient_accumulation_steps=1,
+    gradient_accumulation_steps=8,
     gradient_checkpointing=False,
     # gradient_checkpointing_kwargs={"use_reentrant": False},
     fp16=False,
@@ -207,17 +132,20 @@ training_args = GRPOConfig(
     # Hub integration
     push_to_hub=False,
     log_completions=True,
+    reward_weights=[0.0, 1.0],  # Weights for each reward function
 )
 
 trainer = GRPOTrainer(
-    model=MODEL_NAME,
-    reward_funcs=[format_reward_func, equation_reward_func],
+    model=model,
+    reward_funcs=[
+        # format_reward_func,
+        equation_reward_func,
+        bert_embedding_reward_func,
+    ],
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=test_dataset,
-    # peft_config=get_peft_config(model_config),
     peft_config=peft_config,
-    # quantization_config=quantization_config,
 )
 
 # ##########################
