@@ -1,6 +1,7 @@
 """Reward functions for training policies with PG."""
 
 from abc import ABC, abstractmethod
+import re
 from typing import Optional
 
 import torch
@@ -189,3 +190,125 @@ class FuncOneHotRewardNetwork(RewardFunction):
 
         input_rn = torch.cat([one_hot_y_hat, one_hot_y], dim=-1)
         return functional_call(self.reward_model, self.reward_params, input_rn)
+
+
+# #################################
+# ******* Reward functions ********
+# #################################
+
+
+def format_reward_func(completions, target, **kwargs):
+    """
+    Format: <think>...</think><answer>...</answer>
+    Args:
+        completions (list[str]): Generated outputs
+        target (list[str]): Expected answers
+
+      Returns:
+          list[float]: Reward scores
+    """
+    rewards = []
+
+    for completion, gt in zip(completions, target):
+        try:
+            # add synthetic <think> as its already part of the prompt and prefilled for the assistant to more easily match the regex
+            completion = "<think>" + completion
+            # Check if the format is correct
+            # regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
+            regex = r"^<think>[\s\S]*?<\/think>\s*<answer>[\s\S]*?<\/answer>$"
+            match = re.search(regex, completion, re.DOTALL)
+            # if the format is not correct, reward is 0
+            if match is None or len(match.groups()) != 2:
+                rewards.append(0.0)
+            else:
+                rewards.append(1.0)
+        except Exception:
+            rewards.append(0.0)
+    return rewards
+
+
+def equation_reward_func(completions, target, nums, **kwargs):
+    """
+    Evaluates completions based on:
+    1. Proper <answer> formatting
+    2. Mathematical correctness
+    3. Correct usage of provided numbers
+
+    Supports:
+    - Parentheses
+    - Full formulas with '=' inside <answer>
+      e.g. <answer> 72 / (30 - 29) = 72 </answer>
+    """
+    rewards = []
+
+    for completion, gt, numbers in zip(completions, target, nums):
+        try:
+            completion = "<think>" + completion
+
+            # Extract answer content
+            match = re.search(r"<answer>(.*?)<\/answer>", completion, re.DOTALL)
+            if match is None:
+                rewards.append(0.0)
+                continue
+
+            answer_text = match.group(1).strip()
+
+            # Split on '=' if present
+            if "=" in answer_text:
+                lhs, rhs = map(str.strip, answer_text.split("=", 1))
+            else:
+                lhs, rhs = answer_text, None
+
+            # Allowed characters: digits, operators, parentheses, decimal points, whitespace
+            allowed_pattern = r"^[\d+\-*/().\s]+$"
+
+            if not re.match(allowed_pattern, lhs):
+                rewards.append(0.0)
+                continue
+            if rhs is not None and not re.match(allowed_pattern, rhs):
+                rewards.append(0.0)
+                continue
+
+            # Extract numbers ONLY from the left-hand side expression
+            used_numbers = [int(n) for n in re.findall(r"\d+", lhs)]
+
+            if sorted(used_numbers) != sorted(numbers):
+                rewards.append(0.0)
+                continue
+
+            # Safe evaluation
+            lhs_value = eval(lhs, {"__builtins__": None}, {})
+
+            # Check RHS consistency if present
+            if rhs is not None:
+                rhs_value = eval(rhs, {"__builtins__": None}, {})
+                if abs(float(lhs_value) - float(rhs_value)) > 1e-5:
+                    rewards.append(0.0)
+                    continue
+
+            # Final check against ground truth
+            if abs(float(lhs_value) - float(gt)) < 1e-5:
+                rewards.append(1.0)
+            else:
+                rewards.append(0.0)
+
+        except Exception:
+            rewards.append(0.0)
+
+    return rewards
+
+
+def bert_embedding_reward_func(completions, target, **kwargs):
+    bert_embedder = RM.BertEmbeddingMahalanobisReward(
+        train_encoder=False,
+        train_matrix=False,
+        max_length=2048,
+    )
+    rewards = []
+    for completion, gt in zip(completions, target):
+        try:
+            reward = bert_embedder(completion, gt)
+            rewards.append(reward.item())
+        except Exception:
+            rewards.append(0.0)
+    return rewards

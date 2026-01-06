@@ -169,9 +169,9 @@ class BertEmbeddingMahalanobisReward(nn.Module):
         max_length: int = 2048,
     ):
         super().__init__()
-        assert train_encoder or train_matrix, (
-            "At least one of train_encoder or train_matrix must be True"
-        )
+        # assert train_encoder or train_matrix, (
+        #     "At least one of train_encoder or train_matrix must be True"
+        # )
 
         # Load BERT model and tokenizer
         self.tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
