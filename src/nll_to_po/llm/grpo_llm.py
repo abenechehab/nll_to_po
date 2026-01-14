@@ -9,15 +9,22 @@ from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesCo
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
 
-from nll_to_po.training.reward import equation_reward_func, bert_embedding_reward_func
+from nll_to_po.training.reward import (
+    equation_reward_func,
+    bert_embedding_reward_func_countdown,
+    format_reward_func,
+    bert_embedding_reward_func_gsm8k,
+)
+from nll_to_po.training.data import tokenize
 
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-SYSTEM_PROMPT = "You are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. "
-MODEL_NAME = "Qwen/Qwen3-1.7B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
-DATASET_NAME = "Jiayi-Pan/Countdown-Tasks-3to4"
-DATASET_SIZE = 490364  # 490364
+MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4" # "openai/gsm8k"
+# DATASET_SIZE = 490364  # 490364
+VERSION = "v6"
+BERT = False
 
 
 # ###########################################
@@ -38,88 +45,92 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
-
 # #################################
 # ******** Load Dataset ***********
 # #################################
 
 # Load dataset from Hugging Face Hub
-dataset = load_dataset(DATASET_NAME, split="train")
+if "HuggingFaceTB" in DATASET_NAME:
+    dataset = load_dataset(DATASET_NAME, "verified_Qwen2.5-7B-Instruct")["train"]
+elif "gsm8k" in DATASET_NAME:
+    dataset = load_dataset(DATASET_NAME, "main", split="train")
+else:
+    dataset = load_dataset(DATASET_NAME, split="train")
 # select a random subset of 50k samples
-dataset = dataset.shuffle(seed=42).select(range(DATASET_SIZE))
-
+# dataset = dataset.shuffle(seed=42).select(range(DATASET_SIZE))
 
 # gemerate r1 prompt with a prefix for the model to already start with the thinking process
-def generate_r1_prompt(numbers, target):
-    r1_prefix = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        },
-        {
-            "role": "user",
-            "content": f"Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. Show your work in <think> </think> tags. And return the final equation and answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 = 1 </answer>.",
-        },
-        {"role": "assistant", "content": "Let me solve this step by step.\n<think>"},
-    ]
-    return {
-        "prompt": tokenizer.apply_chat_template(
-            r1_prefix, tokenize=False, continue_final_message=True
-        ),
-        "target": target,
-    }
+if "HuggingFaceTB" in DATASET_NAME:
+    from nll_to_po.training.data import generate_r1_prompt_answer
 
+    dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"]))
+    dataset = dataset.map(lambda x: tokenize(x["prompt"], "prompt", tokenizer))
+elif "gsm8k" in DATASET_NAME:
 
-# convert our dataset to the r1 prompt
-dataset = dataset.map(lambda x: generate_r1_prompt(x["nums"], x["target"]))
+    def format_gsm8k(example):
+        rationale, answer = example["answer"].split("####")
+        return {
+            "prompt": f"Question: {example['question']}\nAnswer:",
+            "answer": answer.strip(),
+            "rationale": rationale.strip(),
+        }
 
-# split the dataset into train and test
-train_test_split = dataset.train_test_split(test_size=0.1)
+    dataset = dataset.map(lambda x: format_gsm8k(x))
+else:
+    raise NotImplementedError(f"Dataset {DATASET_NAME} not implemented.")
 
-train_dataset = train_test_split["train"]
-test_dataset = train_test_split["test"]
-
+train_dataset = dataset
 print(f"one training example: {train_dataset[0]}")
-
 
 # #######################################
 # ******* Trainer (GRPO) config *********
 # #######################################
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/[OUR]trl-grpo-{timestamp}"
+output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/{DATASET_NAME.split('/')[-1]}/{'[BERT]' if BERT else ''}[{VERSION}]trl-grpo-{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
 peft_config = LoraConfig(
     r=8,
-    lora_alpha=32,
-    lora_dropout=0.1,
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ],
-    # target_modules=["q_proj", "v_proj"],
+    lora_alpha=16,
+    lora_dropout=0.05,
+    # target_modules=[
+    #     "q_proj",
+    #     "k_proj",
+    #     "v_proj",
+    #     "o_proj",
+    #     "gate_proj",
+    #     "up_proj",
+    #     "down_proj",
+    # ],
+    target_modules=["q_proj", "v_proj"],
 )
+
+if "gsm8k" in DATASET_NAME:
+    reward_funcs = [bert_embedding_reward_func_gsm8k]
+    reward_weights = [1.0]
+else:
+    reward_funcs = [
+        format_reward_func,
+        equation_reward_func,
+        bert_embedding_reward_func_countdown,
+    ]
+    reward_weights = [0.0, float(not BERT), float(BERT)]
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
     learning_rate=5e-5,
-    # num_train_epochs=10,
-    max_steps=200,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
+    # num_train_epochs=1,
+    max_steps=500,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
     lr_scheduler_type="cosine",
     # Parameters that control the data preprocessing
-    per_device_train_batch_size=1,
+    per_device_train_batch_size=4,
     max_completion_length=1024,  # default: 256            # Max completion length produced during training
     max_prompt_length=256,  # default: 512                # Max prompt length of the input prompt used for generation during training
     # GRPO specific parameters
     num_generations=8,  # 2, # default: 8                  # Number of generations produced during training for comparison
     # beta=0.001,
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,
     gradient_checkpointing=False,
     # gradient_checkpointing_kwargs={"use_reentrant": False},
     fp16=False,
@@ -132,19 +143,14 @@ training_args = GRPOConfig(
     # Hub integration
     push_to_hub=False,
     log_completions=True,
-    reward_weights=[0.0, 1.0],  # Weights for each reward function
+    reward_weights=reward_weights,  # Weights for each reward function
 )
 
 trainer = GRPOTrainer(
     model=model,
-    reward_funcs=[
-        # format_reward_func,
-        equation_reward_func,
-        bert_embedding_reward_func,
-    ],
+    reward_funcs=reward_funcs,
     args=training_args,
     train_dataset=train_dataset,
-    eval_dataset=test_dataset,
     peft_config=peft_config,
 )
 
