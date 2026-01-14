@@ -1,4 +1,6 @@
+import re
 from typing import Optional, Dict, Tuple
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -12,6 +14,8 @@ from sklearn.impute import SimpleImputer
 
 from ucimlrepo import fetch_ucirepo
 import minari
+
+from nll_to_po.training.reward import equation_reward_func
 
 
 UCI_NAME_TO_ID = {"credit_default": 350, "spambase": 94, "poker": 158}
@@ -480,3 +484,118 @@ def generate_data_minari(
             "batch_size": batch_size,
         },
     )
+
+
+def generate_r1_prompt(target, numbers):
+    r1_prefix = [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. ",
+        },
+        {
+            "role": "user",
+            "content": f"Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. Show your work in <think> </think> tags. And return the final equation and answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 = 1 </answer>.",
+        },
+        {"role": "assistant", "content": "Let me solve this step by step.\n<think>"},
+    ]
+    return {
+        "prompt": r1_prefix,
+        "target": target,
+    }
+
+
+def generate_r1_prompt_answer(messages):
+    r1_prefix = [
+        {
+            "role": "system",
+            "content": messages[0]["content"],
+        },
+        {
+            "role": "user",
+            "content": messages[1]["content"],
+        },
+        {"role": "assistant", "content": "Let me solve this step by step.\n<think>"},
+    ]
+    search_result = re.search(r"<answer>\s*(.*?)\s*</answer>", messages[2]["content"])
+    answer = ""
+    if search_result is not None:
+        answer = search_result.group(1).strip()
+    return {
+        "prompt": r1_prefix,
+        "trace": messages[2]["content"],
+        "answer": answer,
+    }
+
+
+def tokenize(prompt, field_name, tokenizer):
+    return {
+        field_name: tokenizer.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True
+        ),
+    }
+
+
+def evaluate(dataset, model, tokenizer, subset_size: int = 100):
+    dataset = dataset.shuffle(seed=42).select(range(subset_size))
+    dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"]))
+    print(f"example prompt before chat template: {dataset[0]['prompt']}")
+    dataset = dataset.map(lambda x: tokenize(x["prompt"], "prompt", tokenizer))
+
+    correct = 0
+    total = len(dataset)
+
+    model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    visited = False
+
+    for example in tqdm(dataset, desc="Evaluating training accuracy"):
+        prompt = example["prompt"]
+
+        # Model prediction
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=1024,
+        ).to(device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=1024,
+                do_sample=False,
+                temperature=0.0,
+            )
+
+        pred = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[-1] :],
+            skip_special_tokens=True,
+        ).strip()
+
+        # True reward function
+        reward = equation_reward_func(
+            completions=[pred],
+            target=[example["target"]],
+            nums=[example["nums"]],
+            verbose=int(not visited),
+        )
+        correct += reward[0]
+
+        if not visited:
+            print("\nExample prediction:")
+            print(f"Prompt: {prompt}")
+            print(f"Predicted answer: {pred}")
+            print(f"target: {example['target']}")
+            print(f"numbers: {example['nums']}")
+            print(f"True answer: {example['answer']}")
+            visited = True
+
+    training_accuracy = correct / total
+
+    print("\n==============================")
+    print(f"Training accuracy: {training_accuracy:.4f}")
+    print(f"Correct: {correct} / {total}")
+    print("==============================")
