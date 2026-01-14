@@ -1,3 +1,10 @@
+* v2: added bert reward
+* v3: fix bert reward (set minimum reward to -1000)
+* v4: bert reward set minimum reward to -100
+* v5: bert reward with the same pattern (regex) checks as equation reward / no format reward
+* v6: specific config for sft on gsm8k
+
+
 
 <div align="center">
 <h1>From Data to Rewards: a Bi-level Optimization Perspective on Maximum Likelihood Estimation</h1>

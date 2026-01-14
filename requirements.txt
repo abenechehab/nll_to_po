@@ -29,3 +29,4 @@ flash-attn==2.8.3
 lm_eval[hf,vllm,api]==0.4.9.2
 math_verify==0.8.0
 latex2sympy2_extended==1.10.2
+liger-kernel==0.6.4
