@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 import re
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from torch.func import functional_call
@@ -197,118 +197,149 @@ class FuncOneHotRewardNetwork(RewardFunction):
 # #################################
 
 
-def format_reward_func(completions, target, **kwargs):
+def format_reward_func(completions, **kwargs):
+    """Reward function that checks if the completion has a specific format."""
+    pattern = r".*?<answer>.*?</answer>(?![\s\S])"
+    matches = [
+        re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completions
+    ]
+    return [1.0 if match else 0.0 for match in matches]
+
+
+def equation_reward_func(completions, target, nums, verbose=0, **kwargs):
     """
-    Format: <think>...</think><answer>...</answer>
+    Evaluates completions based on Mathematical correctness of the answer
     Args:
         completions (list[str]): Generated outputs
         target (list[str]): Expected answers
-
-      Returns:
-          list[float]: Reward scores
+        nums (list[str]): Available numbers
+    Returns:
+        list[float]: Reward scores
     """
     rewards = []
-
-    for completion, gt in zip(completions, target):
-        try:
-            # add synthetic <think> as its already part of the prompt and prefilled for the assistant to more easily match the regex
-            completion = "<think>" + completion
-            # Check if the format is correct
-            # regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
-            regex = r"^<think>[\s\S]*?<\/think>\s*<answer>[\s\S]*?<\/answer>$"
-            match = re.search(regex, completion, re.DOTALL)
-            # if the format is not correct, reward is 0
-            if match is None or len(match.groups()) != 2:
-                rewards.append(0.0)
-            else:
-                rewards.append(1.0)
-        except Exception:
-            rewards.append(0.0)
-    return rewards
-
-
-def equation_reward_func(completions, target, nums, **kwargs):
-    """
-    Evaluates completions based on:
-    1. Proper <answer> formatting
-    2. Mathematical correctness
-    3. Correct usage of provided numbers
-
-    Supports:
-    - Parentheses
-    - Full formulas with '=' inside <answer>
-      e.g. <answer> 72 / (30 - 29) = 72 </answer>
-    """
-    rewards = []
-
     for completion, gt, numbers in zip(completions, target, nums):
         try:
-            completion = "<think>" + completion
-
-            # Extract answer content
-            match = re.search(r"<answer>(.*?)<\/answer>", completion, re.DOTALL)
+            # Check if the format is correct
+            match = re.search(r"<answer>(.*?)<\/answer>", completion)
             if match is None:
                 rewards.append(0.0)
+                if verbose > 0:
+                    print("No match found in completion:", completion)
                 continue
-
-            answer_text = match.group(1).strip()
-
-            # Split on '=' if present
-            if "=" in answer_text:
-                lhs, rhs = map(str.strip, answer_text.split("=", 1))
-            else:
-                lhs, rhs = answer_text, None
-
-            # Allowed characters: digits, operators, parentheses, decimal points, whitespace
-            allowed_pattern = r"^[\d+\-*/().\s]+$"
-
-            if not re.match(allowed_pattern, lhs):
-                rewards.append(0.0)
-                continue
-            if rhs is not None and not re.match(allowed_pattern, rhs):
-                rewards.append(0.0)
-                continue
-
-            # Extract numbers ONLY from the left-hand side expression
-            used_numbers = [int(n) for n in re.findall(r"\d+", lhs)]
-
+            # Extract the "answer" part from the completion
+            equation = match.group(1).strip()
+            if "=" in equation:
+                equation = equation.split("=")[0]
+            # Extract all numbers from the equation
+            used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
+            # Check if all numbers are used exactly once
             if sorted(used_numbers) != sorted(numbers):
                 rewards.append(0.0)
+                if verbose > 0:
+                    print(
+                        f"Used numbers {used_numbers} do not match available numbers {numbers}."
+                    )
                 continue
-
-            # Safe evaluation
-            lhs_value = eval(lhs, {"__builtins__": None}, {})
-
-            # Check RHS consistency if present
-            if rhs is not None:
-                rhs_value = eval(rhs, {"__builtins__": None}, {})
-                if abs(float(lhs_value) - float(rhs_value)) > 1e-5:
-                    rewards.append(0.0)
-                    continue
-
-            # Final check against ground truth
-            if abs(float(lhs_value) - float(gt)) < 1e-5:
+            # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
+            allowed_pattern = r"^[\d+\-*/().\s]+$"
+            if not re.match(allowed_pattern, equation):
+                rewards.append(0.0)
+                if verbose > 0:
+                    print("Equation contains invalid characters:", equation)
+                continue
+            # Evaluate the equation with restricted globals and locals
+            result = eval(equation, {"__builti'ns__": None}, {})
+            # Check if the equation is correct and matches the ground truth
+            if abs(float(result) - float(gt)) < 1e-5:
                 rewards.append(1.0)
             else:
                 rewards.append(0.0)
-
-        except Exception:
+                if verbose > 0:
+                    print(
+                        f"Evaluated result {result} does not match ground truth {gt}."
+                    )
+        except Exception as e:
+            if verbose > 0:
+                print(f"Exception during evaluation: {e}")
+            # If evaluation fails, reward is 0
             rewards.append(0.0)
-
     return rewards
 
 
-def bert_embedding_reward_func(completions, target, **kwargs):
+# def bert_embedding_reward_func(completions, answer, **kwargs):
+#     bert_embedder = RM.BertEmbeddingMahalanobisReward(
+#         train_encoder=False,
+#         train_matrix=False,
+#         max_length=2048,
+#     )
+#     rewards = []
+#     for completion, a in zip(completions, answer):
+#         try:
+#             predicted_answer = re.search(r"<answer>\s*(.*?)\s*</answer>", completion)
+#             if predicted_answer is None:
+#                 rewards.append(-100.0)
+#                 continue
+#             reward = bert_embedder(predicted_answer.group(1).strip(), a)
+#             rewards.append(reward.item())
+#         except Exception:
+#             rewards.append(-100.0)
+#     return rewards
+
+
+def bert_embedding_reward_func_countdown(
+    completions, answer: List[str], nums, **kwargs
+):
+    min_reward = -100.0
     bert_embedder = RM.BertEmbeddingMahalanobisReward(
         train_encoder=False,
         train_matrix=False,
         max_length=2048,
     )
     rewards = []
-    for completion, gt in zip(completions, target):
+    for completion, a, numbers in zip(completions, answer, nums):
         try:
-            reward = bert_embedder(completion, gt)
+            # Check if the format is correct
+            predicted_answer = re.search(r"<answer>(.*?)<\/answer>", completion)
+            if predicted_answer is None:
+                rewards.append(min_reward)
+                continue
+            # Extract the "answer" part from the completion
+            equation = predicted_answer.group(1).strip()
+            if "=" in equation:
+                equation = equation.split("=")[0]
+            # Extract all numbers from the equation
+            used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
+            # Check if all numbers are used exactly once
+            if sorted(used_numbers) != sorted(numbers):
+                rewards.append(min_reward)
+                continue
+            # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
+            allowed_pattern = r"^[\d+\-*/().\s]+$"
+            if not re.match(allowed_pattern, equation):
+                rewards.append(min_reward)
+                continue
+            reward = bert_embedder(predicted_answer.group(1).strip(), a.strip())
             rewards.append(reward.item())
         except Exception:
-            rewards.append(0.0)
+            # If evaluation fails
+            rewards.append(min_reward)
+    return rewards
+
+
+def bert_embedding_reward_func_gsm8k(completions, answer, rationale, **kwargs):
+    min_reward = -100.0
+    bert_embedder = RM.BertEmbeddingMahalanobisReward(
+        train_encoder=False,
+        train_matrix=False,
+        max_length=2048,
+    )
+    rewards = []
+    for completion, a, r in zip(completions, answer, rationale):
+        try:
+            full_answer = f"{r}\nFinal Answer: {a}"
+            reward = bert_embedder(completion.strip(), full_answer.strip())
+            rewards.append(reward.item())
+        except Exception:
+            # If evaluation fails
+            rewards.append(min_reward)
     return rewards
