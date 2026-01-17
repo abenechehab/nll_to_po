@@ -20,11 +20,11 @@ from nll_to_po.training.data import tokenize
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+MODEL_NAME = "Qwen/Qwen3-8B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
 DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4" # "openai/gsm8k"
 # DATASET_SIZE = 490364  # 490364
 VERSION = "v6"
-BERT = False
+BERT = True
 
 
 # ###########################################
@@ -42,6 +42,7 @@ model = AutoModelForCausalLM.from_pretrained(
     #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
     #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
     # )
+    device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
