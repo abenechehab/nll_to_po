@@ -14,7 +14,7 @@ from trl import SFTTrainer, SFTConfig
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-1.7B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+MODEL_NAME = "Qwen/Qwen3-4B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
 DATASET_NAME = "openai/gsm8k"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"
 VERSION = "v6"
 USE_RATIONALE_GSM8K = False
@@ -35,6 +35,7 @@ model = AutoModelForCausalLM.from_pretrained(
     #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
     #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
     # )
+    device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
@@ -113,16 +114,16 @@ peft_config = LoraConfig(
     #     "up_proj",
     #     "down_proj",
     # ],
-    target_modules=["q_proj", "v_proj"],
+    target_modules=["k_proj", "q_proj", "v_proj"],
 )
 
 # Configure training arguments using SFTConfig
 training_args = SFTConfig(
     # Training schedule / optimization
-    per_device_train_batch_size=8,  # Batch size per GPU
-    gradient_accumulation_steps=2,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
+    per_device_train_batch_size=2,  # Batch size per GPU
+    gradient_accumulation_steps=8,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
     warmup_steps=100,
-    num_train_epochs=3,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
+    num_train_epochs=2,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
     # max_steps = 200,
     learning_rate=5e-5,  # Learning rate for the optimizer
     optim="paged_adamw_8bit",  # Optimizer
