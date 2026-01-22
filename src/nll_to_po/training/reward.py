@@ -286,44 +286,79 @@ def equation_reward_func(completions, target, nums, verbose=0, **kwargs):
 #     return rewards
 
 
-def bert_embedding_reward_func_countdown(
-    completions, answer: List[str], nums, **kwargs
+def embedding_reward_func_constructor(
+    model: str,
+    U_star=None,
+    pooling: str = "mean",
+    verbose: int = 0,
+    dataset: str = "",
 ):
-    min_reward = -100.0
-    bert_embedder = RM.BertEmbeddingMahalanobisReward(
-        train_encoder=False,
-        train_matrix=False,
-        max_length=2048,
-    )
-    rewards = []
-    for completion, a, numbers in zip(completions, answer, nums):
-        try:
-            # Check if the format is correct
-            predicted_answer = re.search(r"<answer>(.*?)<\/answer>", completion)
-            if predicted_answer is None:
-                rewards.append(min_reward)
-                continue
-            # Extract the "answer" part from the completion
-            equation = predicted_answer.group(1).strip()
-            if "=" in equation:
-                equation = equation.split("=")[0]
-            # Extract all numbers from the equation
-            used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
-            # Check if all numbers are used exactly once
-            if sorted(used_numbers) != sorted(numbers):
-                rewards.append(min_reward)
-                continue
-            # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
-            allowed_pattern = r"^[\d+\-*/().\s]+$"
-            if not re.match(allowed_pattern, equation):
-                rewards.append(min_reward)
-                continue
-            reward = bert_embedder(predicted_answer.group(1).strip(), a.strip())
-            rewards.append(reward.item())
-        except Exception:
-            # If evaluation fails
-            rewards.append(min_reward)
-    return rewards
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if model == "bert":
+        bert_embedder = RM.BertEmbeddingMahalanobisReward(
+            train_encoder=False,
+            train_matrix=False,
+            max_length=2048,
+            pooling=pooling,
+        )
+        min_reward = -100.0
+    else:
+        bert_embedder = RM.AutoModelEmbeddingMahalanobisReward(
+            model_name=model,
+            train_encoder=False,
+            train_matrix=False,
+            max_length=2048,
+            pooling=pooling,
+        )
+        min_reward = -300.0
+    if U_star is not None:
+        bert_embedder.set_matrix(matrix=torch.nn.Parameter(U_star))
+    bert_embedder.to(device)
+
+    if "Countdown" in dataset:
+
+        def reward_func(completions, answer: List[str], nums, **kwargs):
+            rewards = []
+            for completion, a, numbers in zip(completions, answer, nums):
+                try:
+                    # Check if the format is correct
+                    predicted_answer = re.search(r"<answer>(.*?)<\/answer>", completion)
+                    if predicted_answer is None:
+                        rewards.append(min_reward)
+                        continue
+                    # Extract the "answer" part from the completion
+                    equation = predicted_answer.group(1).strip()
+                    if "=" in equation:
+                        equation = equation.split("=")[0]
+                    # Extract all numbers from the equation
+                    used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
+                    # Check if all numbers are used exactly once
+                    if sorted(used_numbers) != sorted(numbers):
+                        rewards.append(min_reward)
+                        continue
+                    # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
+                    allowed_pattern = r"^[\d+\-*/().\s]+$"
+                    if not re.match(allowed_pattern, equation):
+                        rewards.append(min_reward)
+                        continue
+                    reward = bert_embedder(predicted_answer.group(1).strip(), a.strip())
+                    rewards.append(reward.item())
+                except Exception as e:
+                    # If evaluation fails
+                    if verbose > 0:
+                        print(f"completion: {completion}, answer: {a}. \nError: {e}")
+                    rewards.append(min_reward)
+            return rewards
+    else:
+
+        def reward_func(completions, answer, **kwargs):
+            rewards = []
+            for completion, a in zip(completions, answer):
+                reward = bert_embedder(completion.strip(), a.strip())
+                rewards.append(reward.item())
+            return rewards
+
+    return reward_func
 
 
 def bert_embedding_reward_func_gsm8k(completions, answer, rationale, **kwargs):
