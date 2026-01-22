@@ -3,6 +3,8 @@
 * v4: bert reward set minimum reward to -100
 * v5: bert reward with the same pattern (regex) checks as equation reward / no format reward
 * v6: specific config for sft on gsm8k
+* v7: add U_star support with embedding reward + beta>0 (KL penalization)
+* v8: fix tokenizer issue
 
 
 
@@ -160,12 +162,12 @@ If you use our repository in your work, please cite our paper:
 
 ```bibtex
 @misc{benechehab2025nllpo,
-      title={From Data to Rewards: a Bilevel Optimization Perspective on Maximum Likelihood Estimation}, 
+      title={From Data to Rewards: a Bilevel Optimization Perspective on Maximum Likelihood Estimation},
       author={Abdelhakim Benechehab and Gabriel Singer and Corentin Léger and Youssef Attia El Hili and Giuseppe Paolo and Albert Thomas and Maurizio Filippone and Balázs Kégl},
       year={2025},
       eprint={2510.07624},
       archivePrefix={arXiv},
       primaryClass={stat.ML},
-      url={https://arxiv.org/abs/2510.07624}, 
+      url={https://arxiv.org/abs/2510.07624},
 }
 ```
