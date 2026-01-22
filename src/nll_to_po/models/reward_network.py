@@ -159,7 +159,7 @@ class EmbeddingMahalanobisReward(nn.Module):
         return -torch.einsum("...i,ij,...j->...", diff, self.matrix, diff)
 
 
-class BertEmbeddingMahalanobisReward(nn.Module):
+class BertEmbeddingMahalanobisReward(torch.nn.Module):
     """BERT embedding-based Mahalanobis reward function, when y, y_hat are sentences."""
 
     def __init__(
@@ -167,6 +167,7 @@ class BertEmbeddingMahalanobisReward(nn.Module):
         train_encoder: bool = False,  # Freezing BERT's weights
         train_matrix: bool = True,
         max_length: int = 2048,
+        pooling: str = "mean",  # "mean" or "cls"
     ):
         super().__init__()
         # assert train_encoder or train_matrix, (
@@ -178,6 +179,12 @@ class BertEmbeddingMahalanobisReward(nn.Module):
         self.bert_model = RobertaModel.from_pretrained("roberta-large")
         self.max_length = max_length
 
+        # Pooling strategy
+        assert pooling in ["mean", "cls"], (
+            f"pooling must be 'mean' or 'cls', got '{pooling}'"
+        )
+        self.pooling = pooling
+
         # Freeze the BERT model if train_encoder is False
         if not train_encoder:
             for param in self.bert_model.parameters():
@@ -186,6 +193,18 @@ class BertEmbeddingMahalanobisReward(nn.Module):
         # Mahalanobis scaling matrix
         self.matrix = nn.Parameter(
             torch.eye(self.bert_model.config.hidden_size), requires_grad=train_matrix
+        )
+
+    def _device(self):
+        return next(self.parameters()).device
+
+    def set_matrix(self, matrix: torch.Tensor, trainable: bool = False):
+        hidden = self.bert_model.config.hidden_size
+        assert matrix.shape == (hidden, hidden)
+
+        self.matrix = nn.Parameter(
+            matrix.to(self._device()),
+            requires_grad=trainable,
         )
 
     def encode(self, y, y_hat):
@@ -204,12 +223,19 @@ class BertEmbeddingMahalanobisReward(nn.Module):
                 padding=True,
                 truncation=True,
                 max_length=self.max_length,
-            )
+            ).to(self._device())
             outputs = self.bert_model(**inputs)
-        # exclude padding tokens
-        o = (outputs.last_hidden_state * inputs.attention_mask.unsqueeze(-1)).mean(
-            dim=1
-        )
+
+        # Apply pooling strategy
+        if self.pooling == "cls":
+            # Use CLS token (first token) embedding
+            o = outputs.last_hidden_state[:, 0, :]
+        else:  # "mean"
+            # Mean pooling excluding padding tokens
+            o = (outputs.last_hidden_state * inputs.attention_mask.unsqueeze(-1)).mean(
+                dim=1
+            )
+
         return o[: len(y)], o[len(y) :]
 
     def forward(self, y, y_hat):
@@ -224,27 +250,24 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
         r = - (e(y) - e(y_hat))^T M (e(y) - e(y_hat))
 
     - Supports multiple pooling strategies
-    - PSD-constrained Mahalanobis matrix
+    - Learnable (or fixed) Mahalanobis matrix
     - Works with decoder-only and encoder-decoder LLMs
     """
 
     def __init__(
         self,
         model_name: str,
-        pooling: str = "mean",          # "mean", "last", "attention"
+        pooling: str = "mean",  # "mean", "last", "attention"
         train_encoder: bool = False,
         train_matrix: bool = True,
         max_length: int = 2048,
-        device: str | None = None,
     ):
         super().__init__()
-
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.pooling = pooling
         self.max_length = max_length
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        self.model = AutoModel.from_pretrained(model_name)
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -255,14 +278,27 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
 
         hidden_size = self.model.config.hidden_size
 
-        # PSD Mahalanobis matrix: M = L @ L^T
-        self.L = nn.Parameter(
-            torch.eye(hidden_size), requires_grad=train_matrix
+        # Mahalanobis matrix M (initialized to identity)
+        self.matrix = nn.Parameter(
+            torch.eye(hidden_size),
+            requires_grad=train_matrix,
         )
 
         # Optional attention pooling
         if pooling == "attention":
             self.attention = nn.Linear(hidden_size, 1, bias=False)
+
+    def _device(self):
+        return next(self.parameters()).device
+
+    def set_matrix(self, matrix: torch.Tensor, trainable: bool = False):
+        hidden = self.model.config.hidden_size
+        assert matrix.shape == (hidden, hidden)
+
+        self.matrix = nn.Parameter(
+            matrix.to(self._device()),
+            requires_grad=trainable,
+        )
 
     # ---------------------------
     # Pooling strategies
@@ -288,7 +324,7 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
     def _pool(self, hidden_states, attention_mask):
         if self.pooling == "mean":
             return self._mean_pool(hidden_states, attention_mask)
-        elif self.pooling == "last":
+        elif self.pooling == "last" or self.pooling == "cls":
             return self._last_token_pool(hidden_states, attention_mask)
         elif self.pooling == "attention":
             return self._attention_pool(hidden_states, attention_mask)
@@ -309,12 +345,12 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
             truncation=True,
             max_length=self.max_length,
             return_tensors="pt",
-        ).to(self.device)
+        ).to(self._device())
 
         outputs = self.model(**inputs)
         pooled = self._pool(outputs.last_hidden_state, inputs["attention_mask"])
 
-        return pooled[: len(y)], pooled[len(y):]
+        return pooled[: len(y)], pooled[len(y) :]
 
     # ---------------------------
     # Reward
@@ -324,5 +360,9 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
         e_y, e_y_hat = self.encode(y, y_hat)
         diff = e_y - e_y_hat
 
-        M = self.L @ self.L.T
-        return -torch.einsum("...i,ij,...j->...", diff, M, diff)
+        return -torch.einsum(
+            "...i,ij,...j->...",
+            diff,
+            self.matrix,
+            diff,
+        )
