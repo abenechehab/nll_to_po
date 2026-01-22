@@ -1,6 +1,8 @@
 import os
 import time
 from datetime import datetime
+import json
+from pathlib import Path
 
 from peft import LoraConfig
 import torch
@@ -11,21 +13,59 @@ from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
 
 from nll_to_po.training.reward import (
     equation_reward_func,
-    bert_embedding_reward_func_countdown,
+    embedding_reward_func_constructor,
     format_reward_func,
     bert_embedding_reward_func_gsm8k,
 )
-from nll_to_po.training.data import tokenize
+from nll_to_po.training.data import SYSTEM_PROMPT_ORCA
+from nll_to_po.llm.embed_cov import (
+    compute_U_star_from_covariance,
+    compute_U_star_from_trace,
+)
 
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-8B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
-DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4" # "openai/gsm8k"
-# DATASET_SIZE = 490364  # 490364
-VERSION = "v6"
-BERT = True
+MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
+DATASET_SIZE = -1
+VERSION = "v8"
+EMBED = True
+REWARD_EMBEDDING_MODEL = "google/gemma-3-1b-it"  # "google/gemma-3-1b-it"  # "bert"
+LAMBDA = 0.001
+U_STAR_TYPE = "id"  # "cov" or "trace" or else
+POOLING = "cls"  # "mean" or "cls" (for causalLM models, "cls" means last token)
+USE_PEFT = True
 
+
+# ###########################################
+# ******** Load Covariance matrix ***********
+# ###########################################
+output_path = (
+    Path("results/cov/")
+    / f"{DATASET_NAME.replace('/', '-')}"
+    / REWARD_EMBEDDING_MODEL.split("/")[-1]
+)
+# From covariance
+if os.path.exists(output_path / "covariance.pt") and U_STAR_TYPE == "cov":
+    Sigma = torch.load(output_path / "covariance.pt")
+    U_star = compute_U_star_from_covariance(Sigma, LAMBDA)
+    label = "U-star-cov"
+elif os.path.exists(output_path / "trace.json") and U_STAR_TYPE == "trace":
+    # From trace
+    with open(output_path / "trace.json") as f:
+        data = json.load(f)
+    trace = data["covariance_trace"]
+    n = data["embedding_dim"]  # Get dimension from metadata
+    if data["model_name"] != REWARD_EMBEDDING_MODEL:
+        print(
+            f"Warning: model name in trace file ({data['model_name']}) does not match reward embedding model ({REWARD_EMBEDDING_MODEL})."
+        )
+    U_star = compute_U_star_from_trace(trace, n, LAMBDA)
+    label = "U-star-trace"
+else:
+    U_star = None
+    label = "Id"
 
 # ###########################################
 # ******** Load Model & Tokenizer ***********
@@ -42,7 +82,7 @@ model = AutoModelForCausalLM.from_pretrained(
     #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
     #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
     # )
-    device_map="auto",
+    # device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
@@ -64,8 +104,7 @@ else:
 if "HuggingFaceTB" in DATASET_NAME:
     from nll_to_po.training.data import generate_r1_prompt_answer
 
-    dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"]))
-    dataset = dataset.map(lambda x: tokenize(x["prompt"], "prompt", tokenizer))
+    dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"], tokenizer))
 elif "gsm8k" in DATASET_NAME:
 
     def format_gsm8k(example):
@@ -77,8 +116,31 @@ elif "gsm8k" in DATASET_NAME:
         }
 
     dataset = dataset.map(lambda x: format_gsm8k(x))
+elif "orca" in DATASET_NAME:
+
+    def format_orca(example):
+        r1_prefix = [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT_ORCA,
+            },
+            {
+                "role": "user",
+                "content": example["question"],
+            },
+        ]
+        return {
+            "prompt": tokenizer.apply_chat_template(
+                r1_prefix, tokenize=False, add_generation_prompt=True
+            ),
+        }
+
+    dataset = dataset.map(lambda x: format_orca(x))
 else:
     raise NotImplementedError(f"Dataset {DATASET_NAME} not implemented.")
+
+if DATASET_SIZE > 0:
+    dataset = dataset.select(range(DATASET_SIZE))
 
 train_dataset = dataset
 print(f"one training example: {train_dataset[0]}")
@@ -88,7 +150,7 @@ print(f"one training example: {train_dataset[0]}")
 # #######################################
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME}/{DATASET_NAME.split('/')[-1]}/{'[BERT]' if BERT else ''}[{VERSION}]trl-grpo-{timestamp}"
+output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME.split('/')[-1]}/{DATASET_NAME.split('/')[-1]}/{'[' + REWARD_EMBEDDING_MODEL.split('/')[-1] + ']' + '[' + label + ']' + '[' + POOLING + ']' if EMBED else ''}[{LAMBDA}]{'[peft]' if USE_PEFT else ''}[{VERSION}]trl-grpo-{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
 peft_config = LoraConfig(
@@ -110,19 +172,39 @@ peft_config = LoraConfig(
 if "gsm8k" in DATASET_NAME:
     reward_funcs = [bert_embedding_reward_func_gsm8k]
     reward_weights = [1.0]
+elif "orca" in DATASET_NAME:
+    assert EMBED, "For ORCA dataset, EMBED must be True."
+    reward_funcs = [
+        embedding_reward_func_constructor(
+            model=REWARD_EMBEDDING_MODEL,
+            U_star=U_star,
+            pooling=POOLING,
+            dataset=DATASET_NAME,
+        )
+    ]
+    reward_weights = [1.0]
 else:
     reward_funcs = [
         format_reward_func,
         equation_reward_func,
-        bert_embedding_reward_func_countdown,
     ]
-    reward_weights = [0.0, float(not BERT), float(BERT)]
+    reward_weights = [0.0, float(not EMBED)]
+    if EMBED:
+        reward_funcs.append(
+            embedding_reward_func_constructor(
+                model=REWARD_EMBEDDING_MODEL,
+                U_star=U_star,
+                pooling=POOLING,
+                dataset=DATASET_NAME,
+            )
+        )
+        reward_weights.append(1.0)
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
     learning_rate=5e-5,
     # num_train_epochs=1,
-    max_steps=500,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
+    max_steps=5000,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
     lr_scheduler_type="cosine",
     # Parameters that control the data preprocessing
     per_device_train_batch_size=4,
@@ -130,7 +212,7 @@ training_args = GRPOConfig(
     max_prompt_length=256,  # default: 512                # Max prompt length of the input prompt used for generation during training
     # GRPO specific parameters
     num_generations=8,  # 2, # default: 8                  # Number of generations produced during training for comparison
-    # beta=0.001,
+    beta=LAMBDA,
     gradient_accumulation_steps=4,
     gradient_checkpointing=False,
     # gradient_checkpointing_kwargs={"use_reentrant": False},
