@@ -15,11 +15,11 @@ from nll_to_po.training.data import SYSTEM_PROMPT_ORCA
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
 MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
-DATASET_NAME = "microsoft/orca-math-word-problems-200k"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
-VERSION = "v7"
+DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
+VERSION = "v9"
 USE_RATIONALE_GSM8K = False
-DATASET_SIZE = 50000
-USE_PEFT = False
+# DATASET_SIZE = 50000
+USE_PEFT = True
 
 
 # ###########################################
@@ -37,7 +37,7 @@ model = AutoModelForCausalLM.from_pretrained(
     #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
     #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
     # )
-    # device_map="auto",
+    device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
@@ -56,19 +56,22 @@ elif "orca" in DATASET_NAME:
 else:
     dataset = load_dataset(DATASET_NAME, split="train")
 # select a random subset of 50k samples
-dataset = dataset.shuffle(seed=42).select(range(DATASET_SIZE))
+# dataset = dataset.shuffle(seed=42).select(range(DATASET_SIZE))
 
 # generate sft text or prompt/completion field
 if "HuggingFaceTB" in DATASET_NAME:
+    # def tokenize(example):
+    #     return {
+    #         "text": tokenizer.apply_chat_template(
+    #             example["messages"], tokenize=False, add_generation_prompt=False
+    #         )
+    #     }
 
-    def tokenize(example):
-        return {
-            "text": tokenizer.apply_chat_template(
-                example["messages"], tokenize=False, add_generation_prompt=False
-            )
-        }
-
-    dataset = dataset.map(lambda x: tokenize(x))
+    # dataset = dataset.map(lambda x: tokenize(x))
+    # dataset = dataset.map(
+    #     create_conversation, remove_columns=dataset.features, batched=False
+    # )
+    pass
 elif "gsm8k" in DATASET_NAME:
 
     def tokenize(example):
@@ -102,7 +105,7 @@ elif "orca" in DATASET_NAME:
 else:
     raise NotImplementedError(f"Dataset {DATASET_NAME} not implemented.")
 
-dataset = dataset.select(range(DATASET_SIZE))
+# dataset = dataset.select(range(DATASET_SIZE))
 
 # split the dataset into train and test
 # train_test_split = dataset.train_test_split(test_size=0.1)
@@ -124,7 +127,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 
 peft_config = LoraConfig(
-    r=16,
+    r=8,
     lora_alpha=16,
     lora_dropout=0.05,
     # target_modules=[
@@ -143,7 +146,7 @@ peft_config = LoraConfig(
 training_args = SFTConfig(
     # Training schedule / optimization
     per_device_train_batch_size=8,  # Batch size per GPU
-    gradient_accumulation_steps=2,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
+    gradient_accumulation_steps=4,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
     warmup_steps=100,
     num_train_epochs=10,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
     # max_steps = 200,
@@ -154,7 +157,7 @@ training_args = SFTConfig(
     report_to="tensorboard",  # Experiment tracking tool
     # trackio_space_id=output_dir,          # HF Space where the experiment tracking will be saved
     output_dir=output_dir,  # Where to save model checkpoints and logs
-    max_length=512,  # Maximum input sequence length
+    max_length=2048,  # Maximum input sequence length
     # use_liger_kernel=True,  # Enable Liger kernel optimizations for faster training
     # activation_offloading=True,  # Offload activations to CPU to reduce GPU memory usage
     gradient_checkpointing=False,  # Save memory by re-computing activations during backpropagation
