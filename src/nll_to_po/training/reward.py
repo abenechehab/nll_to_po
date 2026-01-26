@@ -292,13 +292,14 @@ def embedding_reward_func_constructor(
     pooling: str = "mean",
     verbose: int = 0,
     dataset: str = "",
+    max_length: int = 2048,
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if model == "bert":
         bert_embedder = RM.BertEmbeddingMahalanobisReward(
             train_encoder=False,
             train_matrix=False,
-            max_length=2048,
+            max_length=max_length,
             pooling=pooling,
         )
         min_reward = -100.0
@@ -307,7 +308,7 @@ def embedding_reward_func_constructor(
             model_name=model,
             train_encoder=False,
             train_matrix=False,
-            max_length=2048,
+            max_length=max_length,
             pooling=pooling,
         )
         min_reward = -300.0
@@ -341,7 +342,9 @@ def embedding_reward_func_constructor(
                     if not re.match(allowed_pattern, equation):
                         rewards.append(min_reward)
                         continue
-                    reward = bert_embedder(predicted_answer.group(1).strip(), a.strip())
+                    reward = bert_embedder(
+                        y_hat=predicted_answer.group(1).strip(), y=a.strip()
+                    )
                     rewards.append(reward.item())
                 except Exception as e:
                     # If evaluation fails
@@ -354,7 +357,7 @@ def embedding_reward_func_constructor(
         def reward_func(completions, answer, **kwargs):
             rewards = []
             for completion, a in zip(completions, answer):
-                reward = bert_embedder(completion.strip(), a.strip())
+                reward = bert_embedder(y_hat=completion.strip(), y=a.strip())
                 rewards.append(reward.item())
             return rewards
 

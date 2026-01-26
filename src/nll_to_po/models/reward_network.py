@@ -269,6 +269,8 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
 
+        # self.tokenizer.model_max_length = max_length
+
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -347,7 +349,11 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
             return_tensors="pt",
         ).to(self._device())
 
-        outputs = self.model(**inputs)
+        try:
+            outputs = self.model(**inputs)
+        except Exception as e:
+            print(f"Error during model forward pass: {e}")
+            breakpoint()
         pooled = self._pool(outputs.last_hidden_state, inputs["attention_mask"])
 
         return pooled[: len(y)], pooled[len(y) :]
