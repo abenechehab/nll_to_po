@@ -5,6 +5,9 @@
 * v6: specific config for sft on gsm8k
 * v7: add U_star support with embedding reward + beta>0 (KL penalization)
 * v8: fix tokenizer issue
+* v9: sft on countdown
+* v10: investigating n_epochs vs n_steps
+* v11: warmup for grpo
 
 
 
