@@ -8,6 +8,48 @@
 * v9: sft on countdown
 * v10: investigating n_epochs vs n_steps
 * v11: warmup for grpo
+* v12: answer only or answer + rationale reward
+* v13: save every 50 steps
+
+
+# GRPO Training Run Tracker (Detailed)
+
+## Qwen3-0.6B
+
+| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
+|----------|--------|--------|--------|--------|--------|
+| google/embeddinggemma-300m | oracle | 20260127-105010 | 20260127-144650 | 20260127-150349 | |
+| google/embeddinggemma-300m | id | 20260127-105022 | 20260127-144713 | 20260127-150404 | |
+| google/embeddinggemma-300m | u_cov | 20260127-120937 | 20260127-144918 | 20260127-150422 | |
+| google/embeddinggemma-300m | u_trace | 20260127-120925 | 20260127-144929 | 20260127-150414 | |
+
+## Qwen3-1.7B
+
+| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
+|----------|--------|--------|--------|--------|--------|
+| google/embeddinggemma-300m | oracle | 20260127-104959 | | | |
+| google/embeddinggemma-300m | id | 20260127-115236 | | | |
+| google/embeddinggemma-300m | u_cov | | | | |
+| google/embeddinggemma-300m | u_trace | | | | |
+
+## Qwen3-4B
+
+| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
+|----------|--------|--------|--------|--------|--------|
+| google/embeddinggemma-300m | oracle | | | | |
+| google/embeddinggemma-300m | id | | | | |
+| google/embeddinggemma-300m | u_cov | | | | |
+| google/embeddinggemma-300m | u_trace | | | | |
+
+## Qwen3-8B
+
+| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
+|----------|--------|--------|--------|--------|--------|
+| google/embeddinggemma-300m | oracle | | | | |
+| google/embeddinggemma-300m | id | | | | |
+| google/embeddinggemma-300m | u_cov | | | | |
+| google/embeddinggemma-300m | u_trace | | | | |
+
 
 
 
