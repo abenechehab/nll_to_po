@@ -17,7 +17,6 @@ from nll_to_po.training.reward import (
     equation_reward_func,
     embedding_reward_func_constructor,
     format_reward_func,
-    bert_embedding_reward_func_gsm8k,
 )
 from nll_to_po.training.data import SYSTEM_PROMPT_ORCA
 from nll_to_po.llm.embed_cov import (
@@ -28,14 +27,16 @@ from nll_to_po.llm.embed_cov import (
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
 DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
 DATASET_SIZE = -1
-VERSION = "v11"
-EMBED = False
-REWARD_EMBEDDING_MODEL = "roberta-large"  # "google/gemma-3-1b-it"  # "roberta-large"
+VERSION = "v13"
+EMBED = True
+REWARD_EMBEDDING_MODEL = (
+    "google/embeddinggemma-300m"  # "google/gemma-3-1b-it"  # "roberta-large"
+)
 LAMBDA = 0.001
-U_STAR_TYPE = "id"  # "cov" or "trace" or else
+U_STAR_TYPE = "trace"  # "cov" or "trace" or else
 POOLING = "cls"  # "mean" or "cls" (for causalLM models, "cls" means last token)
 USE_PEFT = True
 R_PEFT = 8  # Rank for PEFT LoRA
@@ -43,7 +44,9 @@ SEED = secrets.randbits(32)
 MAX_COMPLETION_LENGTH = 1024  # 1024
 USE_EVAL_DATASET = False
 N_EPOCHS = 1
-N_STEPS = 1000
+N_STEPS = 400
+ANSWER_ONLY = True
+SENTENCE_TRANSFORMER = True  # If True, use SentenceTransformer for embedding; else use BERT-based / causal models
 
 set_seed_everywhere(SEED)
 
@@ -92,7 +95,7 @@ model = AutoModelForCausalLM.from_pretrained(
     #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
     #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
     # )
-    # device_map="auto",
+    device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
 
@@ -185,22 +188,7 @@ peft_config = LoraConfig(
     target_modules=["q_proj", "v_proj"],
 )
 
-if "gsm8k" in DATASET_NAME:
-    reward_funcs = [bert_embedding_reward_func_gsm8k]
-    reward_weights = [1.0]
-elif "orca" in DATASET_NAME:
-    assert EMBED, "For ORCA dataset, EMBED must be True."
-    reward_funcs = [
-        embedding_reward_func_constructor(
-            model=REWARD_EMBEDDING_MODEL,
-            U_star=U_star,
-            pooling=POOLING,
-            dataset=DATASET_NAME,
-            max_length=MAX_COMPLETION_LENGTH,
-        )
-    ]
-    reward_weights = [1.0]
-else:
+if "HuggingFaceTB" in DATASET_NAME:
     reward_funcs = [
         format_reward_func,
         equation_reward_func,
@@ -209,10 +197,26 @@ else:
             U_star=U_star,
             pooling=POOLING,
             dataset=DATASET_NAME,
-            max_length=MAX_COMPLETION_LENGTH,
+            max_length=MAX_COMPLETION_LENGTH + 256,
+            answer_only=ANSWER_ONLY,
+            sentence_transformer=SENTENCE_TRANSFORMER,
         ),
     ]
     reward_weights = [0.0, float(not EMBED), float(EMBED)]
+else:
+    assert EMBED, "For non countdown datasets, EMBED must be True."
+    reward_funcs = [
+        embedding_reward_func_constructor(
+            model=REWARD_EMBEDDING_MODEL,
+            U_star=U_star,
+            pooling=POOLING,
+            dataset=DATASET_NAME,
+            max_length=MAX_COMPLETION_LENGTH + 256,
+            answer_only=ANSWER_ONLY,
+            sentence_transformer=SENTENCE_TRANSFORMER,
+        )
+    ]
+    reward_weights = [1.0]
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
@@ -222,7 +226,7 @@ training_args = GRPOConfig(
     num_train_epochs=N_EPOCHS,
     max_steps=N_STEPS,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
     lr_scheduler_type="cosine",
-    warmup_steps=10,
+    warmup_ratio=0.05,
     # Parameters that control the data preprocessing
     per_device_train_batch_size=8,
     gradient_accumulation_steps=1,
@@ -241,6 +245,7 @@ training_args = GRPOConfig(
     # Parameters related to reporting and saving
     output_dir=output_dir,  # Where to save model checkpoints and logs
     logging_steps=1,  # Log training metrics every N steps
+    save_steps=20,  # Save model checkpoint every N steps
     report_to="tensorboard",  # Experiment tracking tool
     # trackio_space_id = output_dir,
     # Hub integration
