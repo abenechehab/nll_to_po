@@ -1,13 +1,15 @@
 import argparse
 import json
 from pathlib import Path
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
+
+from datasets import load_dataset
 from transformers import AutoModel, AutoTokenizer
+from sentence_transformers import SentenceTransformer
 
 from nll_to_po.training.data import generate_r1_prompt_answer
 
@@ -96,6 +98,86 @@ class EmbeddingExtractor(nn.Module):
         return pooled
 
 
+class SentenceTransformerEmbeddingExtractor(nn.Module):
+    """
+    Extract embeddings using SentenceTransformer models.
+
+    Simplified interface since SentenceTransformer handles pooling internally.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "google/embeddinggemma-300m",
+        max_length: int = 2048,
+        device: str | None = None,
+        normalize_embeddings: bool = False,
+    ):
+        """
+        Args:
+            model_name: HuggingFace model name or path
+            max_length: Maximum sequence length
+            device: Device to use (defaults to cuda if available)
+            normalize_embeddings: Whether to L2-normalize embeddings
+        """
+        super().__init__()
+
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.max_length = max_length
+        self.normalize_embeddings = normalize_embeddings
+
+        # Load SentenceTransformer model
+        self.model = SentenceTransformer(model_name, device=self.device)
+
+        # Set max sequence length
+        self.model.max_seq_length = max_length
+
+        # Freeze model parameters (no training needed)
+        for p in self.model.parameters():
+            p.requires_grad = False
+
+        self.model.eval()
+
+    def get_embedding_dimension(self):
+        """Get the dimensionality of the embeddings."""
+        return self.model.get_sentence_embedding_dimension()
+
+    @torch.no_grad()
+    def encode_batch(self, texts):
+        """
+        Encode a batch of texts into embeddings.
+
+        Args:
+            texts: List of strings or single string
+
+        Returns:
+            Tensor of shape (batch_size, embedding_dim) or (embedding_dim,) for single input
+        """
+        # Handle single string input
+        single_input = isinstance(texts, str)
+        if single_input:
+            texts = [texts]
+
+        # Encode using SentenceTransformer
+        embeddings = self.model.encode(
+            texts,
+            convert_to_tensor=True,
+            device=self.device,
+            show_progress_bar=False,
+            normalize_embeddings=self.normalize_embeddings,
+        )
+
+        # Return single embedding if single input
+        if single_input:
+            return embeddings.squeeze(0)
+
+        return embeddings
+
+    @torch.no_grad()
+    def __call__(self, texts):
+        """Alias for encode_batch for convenience."""
+        return self.encode_batch(texts)
+
+
 def collate_fn(batch):
     """Simple collate function that returns list of strings."""
     return batch
@@ -107,6 +189,7 @@ def compute_answer_embeddings(
     pooling: str = "mean",
     batch_size: int = 32,
     max_length: int = 2048,
+    is_sentence_transformer: bool = True,
 ):
     """
     Compute embeddings for all answers in the dataset.
@@ -126,11 +209,17 @@ def compute_answer_embeddings(
     answers = dataset["answer"]
 
     # Initialize model
-    extractor = EmbeddingExtractor(
-        model_name=model_name,
-        pooling=pooling,
-        max_length=max_length,
-    )
+    if is_sentence_transformer:
+        extractor = EmbeddingExtractor(
+            model_name=model_name,
+            pooling=pooling,
+            max_length=max_length,
+        )
+    else:
+        extractor = SentenceTransformerEmbeddingExtractor(
+            model_name=model_name,
+            max_length=max_length,
+        )
 
     # Create dataloader
     answer_dataset = AnswerEmbeddingDataset(answers)
@@ -245,6 +334,12 @@ def main():
         default=2048,
         help="Maximum sequence length",
     )
+    parser.add_argument(
+        "--is_sentence_transformer",
+        type=bool,
+        default=True,
+        help="Whether to use SentenceTransformer for embeddings",
+    )
 
     args = parser.parse_args()
 
@@ -260,6 +355,7 @@ def main():
         pooling=args.pooling,
         batch_size=args.batch_size,
         max_length=args.max_length,
+        is_sentence_transformer=args.is_sentence_transformer,
     )
 
     print(f"Embedding shape: {embeddings.shape}")
