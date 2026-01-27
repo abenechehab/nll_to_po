@@ -293,18 +293,19 @@ def embedding_reward_func_constructor(
     verbose: int = 0,
     dataset: str = "",
     max_length: int = 2048,
+    answer_only: bool = True,
+    sentence_transformer: bool = False,
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if model == "bert":
-        bert_embedder = RM.BertEmbeddingMahalanobisReward(
+    if sentence_transformer:
+        embedder = RM.SentenceTransformerMahalanobisReward(
             train_encoder=False,
             train_matrix=False,
             max_length=max_length,
-            pooling=pooling,
         )
         min_reward = -100.0
     else:
-        bert_embedder = RM.AutoModelEmbeddingMahalanobisReward(
+        embedder = RM.AutoModelEmbeddingMahalanobisReward(
             model_name=model,
             train_encoder=False,
             train_matrix=False,
@@ -313,14 +314,14 @@ def embedding_reward_func_constructor(
         )
         min_reward = -300.0
     if U_star is not None:
-        bert_embedder.set_matrix(matrix=torch.nn.Parameter(U_star))
-    bert_embedder.to(device)
+        embedder.set_matrix(matrix=torch.nn.Parameter(U_star))
+    embedder.to(device)
 
     if "Countdown" in dataset:
 
-        def reward_func(completions, answer: List[str], nums, **kwargs):
+        def reward_func(completions, answer: List[str], nums, trace, **kwargs):
             rewards = []
-            for completion, a, numbers in zip(completions, answer, nums):
+            for completion, a, numbers, rt in zip(completions, answer, nums, trace):
                 try:
                     # Check if the format is correct
                     predicted_answer = re.search(r"<answer>(.*?)<\/answer>", completion)
@@ -342,9 +343,10 @@ def embedding_reward_func_constructor(
                     if not re.match(allowed_pattern, equation):
                         rewards.append(min_reward)
                         continue
-                    reward = bert_embedder(
-                        y_hat=predicted_answer.group(1).strip(), y=a.strip()
-                    )
+                    if answer_only:
+                        reward = embedder(y_hat=predicted_answer.group(1).strip(), y=a)
+                    else:
+                        reward = embedder(y_hat=completion.strip(), y=rt)
                     rewards.append(reward.item())
                 except Exception as e:
                     # If evaluation fails
@@ -357,27 +359,14 @@ def embedding_reward_func_constructor(
         def reward_func(completions, answer, **kwargs):
             rewards = []
             for completion, a in zip(completions, answer):
-                reward = bert_embedder(y_hat=completion.strip(), y=a.strip())
-                rewards.append(reward.item())
+                try:
+                    reward = embedder(y_hat=completion.strip(), y=a)
+                    rewards.append(reward.item())
+                except Exception as e:
+                    # If evaluation fails
+                    if verbose > 0:
+                        print(f"completion: {completion}, answer: {a}. \nError: {e}")
+                    rewards.append(min_reward)
             return rewards
 
     return reward_func
-
-
-def bert_embedding_reward_func_gsm8k(completions, answer, rationale, **kwargs):
-    min_reward = -100.0
-    bert_embedder = RM.BertEmbeddingMahalanobisReward(
-        train_encoder=False,
-        train_matrix=False,
-        max_length=2048,
-    )
-    rewards = []
-    for completion, a, r in zip(completions, answer, rationale):
-        try:
-            full_answer = f"{r}\nFinal Answer: {a}"
-            reward = bert_embedder(completion.strip(), full_answer.strip())
-            rewards.append(reward.item())
-        except Exception:
-            # If evaluation fails
-            rewards.append(min_reward)
-    return rewards
