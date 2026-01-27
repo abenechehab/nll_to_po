@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers import RobertaTokenizer, RobertaModel, AutoModel, AutoTokenizer
+from sentence_transformers import SentenceTransformer
 
 
 class RewardMLP(nn.Module):
@@ -349,11 +350,7 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
             return_tensors="pt",
         ).to(self._device())
 
-        try:
-            outputs = self.model(**inputs)
-        except Exception as e:
-            print(f"Error during model forward pass: {e}")
-            breakpoint()
+        outputs = self.model(**inputs)
         pooled = self._pool(outputs.last_hidden_state, inputs["attention_mask"])
 
         return pooled[: len(y)], pooled[len(y) :]
@@ -366,6 +363,119 @@ class AutoModelEmbeddingMahalanobisReward(nn.Module):
         e_y, e_y_hat = self.encode(y, y_hat)
         diff = e_y - e_y_hat
 
+        return -torch.einsum(
+            "...i,ij,...j->...",
+            diff,
+            self.matrix,
+            diff,
+        )
+
+
+class SentenceTransformerMahalanobisReward(nn.Module):
+    """
+    Embedding-based reward using SentenceTransformer:
+        r = - (e(y) - e(y_hat))^T M (e(y) - e(y_hat))
+
+    - Uses SentenceTransformer for embeddings
+    - Learnable (or fixed) Mahalanobis matrix
+    - Supports batch processing
+    """
+
+    def __init__(
+        self,
+        model_name: str = "google/embeddinggemma-300m",
+        train_encoder: bool = False,
+        train_matrix: bool = True,
+        max_length: int = 2048,
+    ):
+        super().__init__()
+        self.max_length = max_length
+
+        # Load SentenceTransformer model
+        self.model = SentenceTransformer(model_name)
+
+        # Set max sequence length
+        self.model.max_seq_length = max_length
+
+        # Freeze encoder if not training
+        if not train_encoder:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+        # Get embedding dimension
+        hidden_size = self.model.get_sentence_embedding_dimension()
+
+        # Mahalanobis matrix M (initialized to identity)
+        self.matrix = nn.Parameter(
+            torch.eye(hidden_size),
+            requires_grad=train_matrix,
+        )
+
+    def _device(self):
+        return self.matrix.device
+
+    def set_matrix(self, matrix: torch.Tensor, trainable: bool = False):
+        """Set the Mahalanobis matrix with optional trainability."""
+        hidden = self.model.get_sentence_embedding_dimension()
+        assert matrix.shape == (hidden, hidden), (
+            f"Matrix shape {matrix.shape} doesn't match embedding dim ({hidden}, {hidden})"
+        )
+
+        self.matrix = nn.Parameter(
+            matrix.to(self._device()),
+            requires_grad=trainable,
+        )
+
+    def encode(self, y, y_hat):
+        """
+        Encode both reference and predicted strings.
+
+        Args:
+            y: Reference string(s) - can be single string or list
+            y_hat: Predicted string(s) - can be single string or list
+
+        Returns:
+            Tuple of (e_y, e_y_hat) tensors
+        """
+        # Ensure inputs are lists
+        if isinstance(y, str):
+            y = [y]
+        if isinstance(y_hat, str):
+            y_hat = [y_hat]
+
+        # Encode using document encoding (you could also use encode_query for y if appropriate)
+        # Note: SentenceTransformer handles batching internally
+        e_y = self.model.encode(
+            y,
+            convert_to_tensor=True,
+            device=self._device(),
+            show_progress_bar=False,
+        )
+
+        e_y_hat = self.model.encode(
+            y_hat,
+            convert_to_tensor=True,
+            device=self._device(),
+            show_progress_bar=False,
+        )
+
+        return e_y, e_y_hat
+
+    def forward(self, y, y_hat):
+        """
+        Compute Mahalanobis distance-based reward.
+
+        Args:
+            y: Reference string(s)
+            y_hat: Predicted string(s)
+
+        Returns:
+            Negative Mahalanobis distance(s)
+        """
+        e_y, e_y_hat = self.encode(y, y_hat)
+        diff = e_y - e_y_hat
+
+        # Compute -diff^T M diff
         return -torch.einsum(
             "...i,ij,...j->...",
             diff,
