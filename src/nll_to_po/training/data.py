@@ -529,7 +529,7 @@ def generate_r1_prompt(target, numbers):
     }
 
 
-def generate_r1_prompt_answer(messages, tokenizer):
+def generate_r1_prompt_answer(messages, tokenizer: Optional[object] = None):
     r1_prefix = [
         {
             "role": "system",
@@ -545,10 +545,12 @@ def generate_r1_prompt_answer(messages, tokenizer):
     answer = ""
     if search_result is not None:
         answer = search_result.group(1).strip()
-    return {
-        "prompt": tokenizer.apply_chat_template(
+    if tokenizer is not None:
+        r1_prefix = tokenizer.apply_chat_template(
             r1_prefix, tokenize=False, add_generation_prompt=False
-        ),
+        )
+    return {
+        "prompt": r1_prefix,
         "trace": messages[2]["content"],
         "answer": answer,
     }
