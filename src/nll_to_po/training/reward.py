@@ -299,6 +299,7 @@ def embedding_reward_func_constructor(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if sentence_transformer:
         embedder = RM.SentenceTransformerMahalanobisReward(
+            model_name=model,
             train_encoder=False,
             train_matrix=False,
             max_length=max_length,
