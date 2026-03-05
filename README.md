@@ -10,6 +10,7 @@
 * v11: warmup for grpo
 * v12: answer only or answer + rationale reward
 * v13: save every 50 steps
+* v14: rebuttal
 
 
 # GRPO Training Run Tracker (Detailed)
@@ -18,19 +19,19 @@
 
 | Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
 |----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | 20260127-105010 | 20260127-144650 | 20260127-150349 | |
-| google/embeddinggemma-300m | id | 20260127-105022 | 20260127-144713 | 20260127-150404 | |
-| google/embeddinggemma-300m | u_cov | 20260127-120937 | 20260127-144918 | 20260127-150422 | |
-| google/embeddinggemma-300m | u_trace | 20260127-120925 | 20260127-144929 | 20260127-150414 | |
+| google/embeddinggemma-300m | oracle | 20260127-105010 E | 20260127-144650 E | 20260127-150349 E | |
+| google/embeddinggemma-300m | id | 20260127-105022 E | 20260127-144713 E | 20260127-150404 E | |
+| google/embeddinggemma-300m | u_cov | 20260127-120937 E | 20260127-144918 E | 20260127-150422 E | |
+| google/embeddinggemma-300m | u_trace | 20260127-120925 E | 20260127-144929 E | 20260127-150414 E | |
 
 ## Qwen3-1.7B
 
 | Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
 |----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | 20260127-104959 | | | |
-| google/embeddinggemma-300m | id | 20260127-115236 | | | |
-| google/embeddinggemma-300m | u_cov | | | | |
-| google/embeddinggemma-300m | u_trace | | | | |
+| google/embeddinggemma-300m | oracle | 20260127-104959 | 20260127-160058 | 20260127-182825 | |
+| google/embeddinggemma-300m | id | 20260127-115236 | 20260127-164317 | 20260127-174819 | |
+| google/embeddinggemma-300m | u_cov | 20260127-153709 | 20260127-174236 | 20260127-174252 | |
+| google/embeddinggemma-300m | u_trace | 20260127-153241 | 20260127-174158 | 20260127-174207 | |
 
 ## Qwen3-4B
 
