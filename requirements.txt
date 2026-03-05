@@ -17,19 +17,3 @@ tensorboard==2.20.0
 # tracking
 wandb==0.21.0
 nbformat==5.1
-
-# llm
-transformers==4.57.3
-trl[peft]==0.26.2
-datasets==4.4.2
-peft==0.18.0
-accelerate==1.12.0
-bitsandbytes==0.49.0
-flash-attn==2.8.3
-lm_eval[hf,api]==0.4.9.2  # vllm
-math_verify==0.8.0
-latex2sympy2_extended==1.10.2
-liger-kernel==0.6.4
-accelerate==1.12.0
-deepspeed==0.18.4
-sentence-transformers==5.2.1
