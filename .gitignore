@@ -18,9 +18,6 @@ PKG-INFO
 
 __pycache__
 
-*.lock
-uv.lock
-
 wandb/
 logs/
 figures/
