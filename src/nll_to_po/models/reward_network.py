@@ -392,7 +392,7 @@ class SentenceTransformerMahalanobisReward(nn.Module):
         self.max_length = max_length
 
         # Load SentenceTransformer model
-        self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name, trust_remote_code=True)
 
         # Set max sequence length
         self.model.max_seq_length = max_length
