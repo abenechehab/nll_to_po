@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from transformers import RobertaTokenizer, RobertaModel, AutoModel, AutoTokenizer
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.models import StaticEmbedding
 
 
 class RewardMLP(nn.Module):
@@ -392,10 +393,13 @@ class SentenceTransformerMahalanobisReward(nn.Module):
         self.max_length = max_length
 
         # Load SentenceTransformer model
-        self.model = SentenceTransformer(model_name, trust_remote_code=True)
-
-        # Set max sequence length
-        self.model.max_seq_length = max_length
+        if model_name == "NeuML/pubmedbert-base-embeddings-8M":
+            static = StaticEmbedding.from_model2vec(model_name)
+            self.model = SentenceTransformer(modules=[static])
+        else:
+            self.model = SentenceTransformer(model_name, trust_remote_code=True)
+            # Set max sequence length
+            self.model.max_seq_length = max_length
 
         # Freeze encoder if not training
         if not train_encoder:
