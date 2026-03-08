@@ -27,3 +27,5 @@ results/
 notebook/data/
 notebook/saved_models/
 notebook/internal/
+
+lm_eval_results/
