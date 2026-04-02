@@ -11,6 +11,7 @@
 * v12: answer only or answer + rationale reward
 * v13: save every 50 steps
 * v14: rebuttal
+* v15: medical
 
 
 # GRPO Training Run Tracker (Detailed)
