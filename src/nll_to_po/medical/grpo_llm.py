@@ -1,20 +1,21 @@
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
 import secrets
+from typing import Optional
 
-from peft import LoraConfig
+import tyro
+from peft import LoraConfig, PeftModel
 import torch
 
 from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesConfig
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
-from peft import PeftModel
 
 from nll_to_po.training.utils import set_seed_everywhere
-
 from nll_to_po.llm.embed_cov import (
     compute_U_star_from_covariance,
     compute_U_star_from_trace,
@@ -27,228 +28,268 @@ from nll_to_po.medical.utils import (
 )
 
 
-# FP8 = False
-OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
-DATASET_NAME = "bigbio/pubmed_qa"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
-DATASET_SIZE = -1
-VERSION = "v15"
-FORMAT_WEIGHT = 0.5
-EMBED = True
-REWARD_EMBEDDING_MODEL = "NeuML/pubmedbert-base-embeddings-8M"  # "google/gemma-3-1b-it"  # "roberta-large"  # google/embeddinggemma-300m
-LAMBDA = 0.001
-U_STAR_TYPE = "id"  # "cov" or "trace" or else
-POOLING = "cls"  # "mean" or "cls" (for causalLM models, "cls" means last token)
-USE_PEFT = True
-R_PEFT = 8  # Rank for PEFT LoRA
-SEED = secrets.randbits(32)
-MAX_COMPLETION_LENGTH = 1024  # 1024
-USE_EVAL_DATASET = False
-N_EPOCHS = 1
-N_STEPS = 400
-ANSWER_ONLY = False
-SENTENCE_TRANSFORMER = True  # If True, use SentenceTransformer for embedding; else use BERT-based / causal models
-ADAPTER_PATH = "logs/Qwen3-0.6B/pubmed_qa/[peft][v15]trl-sft-20260310-134800"
+@dataclass
+class TrainConfig:
+    # Model and data
+    model_name: str = "Qwen/Qwen3-0.6B"
+    """HuggingFace model ID or local path."""
+    dataset_name: str = "bigbio/pubmed_qa"
+    """HuggingFace dataset ID."""
+    dataset_size: int = -1
+    """Number of training samples. -1 uses the full dataset."""
+    output_dir_root: str = "logs"
+    """Root directory for checkpoints and TensorBoard logs."""
+    version: str = "v15"
+    """Version tag appended to the output directory name."""
+    seed: Optional[int] = None
+    """Random seed. If None, a random seed is generated."""
+    adapter_path: Optional[str] = None
+    """Path to a SFT adapter (local dir) to load and merge before GRPO training."""
 
-set_seed_everywhere(SEED)
+    # Reward
+    format_weight: float = 0.5
+    """Weight of the format-compliance reward (relative to answer-correctness and embedding)."""
+    embed: bool = True
+    """Use embedding-based Mahalanobis reward."""
+    reward_embedding_model: str = "NeuML/pubmedbert-base-embeddings-8M"
+    """HuggingFace model ID for the reward embedding model."""
+    lam: float = 0.001
+    """Lambda: KL penalty coefficient (beta in GRPO) and U_star regularization."""
+    u_star_type: str = "id"
+    """U_star matrix type: 'id' (identity), 'cov' (from covariance.pt), 'trace' (from trace.json)."""
+    pooling: str = "cls"
+    """Pooling strategy for the embedding model: 'mean', 'cls', or 'last'."""
+    answer_only: bool = False
+    """Embed only the short yes/no answer; if False, embed the long_answer explanation."""
+    sentence_transformer: bool = True
+    """Use SentenceTransformer API for embedding; otherwise use AutoModel."""
+
+    # PEFT / LoRA
+    use_peft: bool = True
+    """Use LoRA (PEFT) for parameter-efficient fine-tuning."""
+    r_peft: int = 8
+    """LoRA rank."""
+
+    # Training schedule
+    n_epochs: int = 1
+    """Number of training epochs (used when n_steps <= 0)."""
+    n_steps: int = 400
+    """Max training steps. Set to -1 to train for n_epochs instead."""
+    max_completion_length: int = 1024
+    """Maximum number of tokens generated per completion during training."""
+    max_prompt_length: int = 256
+    """Maximum prompt length in tokens."""
+    use_eval_dataset: bool = False
+    """Evaluate on a held-out validation split during training."""
+
+    # Optimizer / batching
+    learning_rate: float = 5e-5
+    """AdamW learning rate."""
+    per_device_train_batch_size: int = 4
+    """Per-device training batch size."""
+    gradient_accumulation_steps: int = 2
+    """Gradient accumulation steps (effective batch = batch_size * accum * n_gpus)."""
+    num_generations: int = 8
+    """Number of completions generated per prompt for GRPO comparison."""
+    save_steps: int = 20
+    """Save a checkpoint every N steps."""
 
 
-# ###########################################
-# ******** Load Covariance matrix ***********
-# ###########################################
-output_path = (
-    Path("results/cov/")
-    / f"{DATASET_NAME.replace('/', '-')}"
-    / REWARD_EMBEDDING_MODEL.split("/")[-1]
-)
-# From covariance
-if os.path.exists(output_path / "covariance.pt") and U_STAR_TYPE == "cov":
-    Sigma = torch.load(output_path / "covariance.pt")
-    U_star = compute_U_star_from_covariance(Sigma, LAMBDA)
-    label = "U-star-cov"
-elif os.path.exists(output_path / "trace.json") and U_STAR_TYPE == "trace":
-    # From trace
-    with open(output_path / "trace.json") as f:
-        data = json.load(f)
-    trace = data["covariance_trace"]
-    n = data["embedding_dim"]  # Get dimension from metadata
-    if data["model_name"] != REWARD_EMBEDDING_MODEL:
-        print(
-            f"Warning: model name in trace file ({data['model_name']}) does not match reward embedding model ({REWARD_EMBEDDING_MODEL})."
-        )
-    U_star = compute_U_star_from_trace(trace, n, LAMBDA)
-    label = "U-star-trace"
-else:
-    U_star = None
-    label = "Id"
+def main(cfg: TrainConfig) -> None:
+    seed = cfg.seed if cfg.seed is not None else secrets.randbits(32)
+    set_seed_everywhere(seed)
 
-# ###########################################
-# ******** Load Model & Tokenizer ***********
-# ###########################################
+    # ###########################################
+    # ******** Load Covariance matrix ***********
+    # ###########################################
+    output_path = (
+        Path("results/cov/")
+        / f"{cfg.dataset_name.replace('/', '-')}"
+        / cfg.reward_embedding_model.split("/")[-1]
+    )
+    if os.path.exists(output_path / "covariance.pt") and cfg.u_star_type == "cov":
+        Sigma = torch.load(output_path / "covariance.pt")
+        U_star = compute_U_star_from_covariance(Sigma, cfg.lam)
+        label = "U-star-cov"
+    elif os.path.exists(output_path / "trace.json") and cfg.u_star_type == "trace":
+        with open(output_path / "trace.json") as f:
+            data = json.load(f)
+        trace = data["covariance_trace"]
+        n = data["embedding_dim"]
+        if data["model_name"] != cfg.reward_embedding_model:
+            print(
+                f"Warning: model name in trace file ({data['model_name']}) does not match "
+                f"reward embedding model ({cfg.reward_embedding_model})."
+            )
+        U_star = compute_U_star_from_trace(trace, n, cfg.lam)
+        label = "U-star-trace"
+    else:
+        U_star = None
+        label = "Id"
 
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
-    dtype="bfloat16",  # Change to bfloat16 if GPU has support
-    use_cache=True,  # Whether to cache attention outputs to speed up inference
-    # quantization_config=BitsAndBytesConfig(
-    #     load_in_4bit=True,                        # Load the model in 4-bit precision to save memory
-    #     # bnb_4bit_compute_dtype=torch.float16,     # Data type used for internal computations in quantization
-    #     # bnb_4bit_use_double_quant=True,           # Use double quantization to improve accuracy
-    #     # bnb_4bit_quant_type="nf4"                 # Type of quantization. "nf4" is recommended for recent LLMs
-    # )
-    device_map="auto",
-)
-tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
-if ADAPTER_PATH is not None:
-    model = PeftModel.from_pretrained(model, ADAPTER_PATH)
-    model = model.merge_and_unload()
+    # ###########################################
+    # ******** Load Model & Tokenizer ***********
+    # ###########################################
 
-# #################################
-# ******** Load Dataset ***********
-# #################################
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.model_name,
+        attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+        dtype="bfloat16",  # Change to bfloat16 if GPU has support
+        use_cache=True,  # Whether to cache attention outputs to speed up inference
+        # quantization_config=BitsAndBytesConfig(
+        #     load_in_4bit=True,
+        #     # bnb_4bit_compute_dtype=torch.float16,
+        #     # bnb_4bit_use_double_quant=True,
+        #     # bnb_4bit_quant_type="nf4"
+        # )
+        device_map="auto",
+    )
+    tokenizer = AutoProcessor.from_pretrained(cfg.model_name, padding_side="left")
+    if cfg.adapter_path is not None:
+        model = PeftModel.from_pretrained(model, cfg.adapter_path)
+        model = model.merge_and_unload()
 
-# Load dataset from Hugging Face Hub
-dataset = load_dataset(DATASET_NAME)
-dataset = prepare_dataset(dataset["train"])
-if DATASET_SIZE > 0:
-    dataset = dataset.select(range(DATASET_SIZE))
+    # #################################
+    # ******** Load Dataset ***********
+    # #################################
 
-# split the dataset into train and validation
-train_test_split = dataset.train_test_split(test_size=0.1)
+    dataset = load_dataset(cfg.dataset_name)
+    dataset = prepare_dataset(dataset["train"])
+    if cfg.dataset_size > 0:
+        dataset = dataset.select(range(cfg.dataset_size))
 
-train_dataset = train_test_split["train"]
-test_dataset = train_test_split["test"]
+    train_test_split = dataset.train_test_split(test_size=0.1)
+    train_dataset = train_test_split["train"]
+    test_dataset = train_test_split["test"]
+    print(f"one training example: {train_dataset[0]}")
 
-# train_dataset = dataset
-print(f"one training example: {train_dataset[0]}")
+    # #######################################
+    # ******* Trainer (GRPO) config *********
+    # #######################################
 
-# #######################################
-# ******* Trainer (GRPO) config *********
-# #######################################
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    embed_tag = (
+        "["
+        + cfg.reward_embedding_model.split("/")[-1]
+        + "]["
+        + label
+        + "]["
+        + cfg.pooling
+        + "]"
+        if cfg.embed
+        else ""
+    )
+    steps_tag = f"s:{cfg.n_steps}" if cfg.n_steps > 0 else f"e:{cfg.n_epochs}"
+    peft_tag = f"[peft_{cfg.r_peft}]" if cfg.use_peft else ""
+    adapter_tag = (
+        f"[adapter-{cfg.adapter_path.split('/')[-1]}]" if cfg.adapter_path else ""
+    )
+    output_dir = (
+        f"{cfg.output_dir_root}/{cfg.model_name.split('/')[-1]}/"
+        f"{cfg.dataset_name.split('/')[-1]}/"
+        f"{embed_tag}[{cfg.lam}]{peft_tag}[{steps_tag}][{cfg.version}]{adapter_tag}trl-grpo-{timestamp}"
+    )
+    os.makedirs(output_dir, exist_ok=True)
 
-timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME.split('/')[-1]}/{DATASET_NAME.split('/')[-1]}/{'[' + REWARD_EMBEDDING_MODEL.split('/')[-1] + ']' + '[' + label + ']' + '[' + POOLING + ']' if EMBED else ''}[{LAMBDA}]{'[peft_' + str(R_PEFT) + ']' if USE_PEFT else ''}[{'s:' + str(N_STEPS) + ']' if N_STEPS > 0 else 'e:' + str(N_EPOCHS)}[{VERSION}][adapter-{ADAPTER_PATH.split('/')[-1]}]trl-grpo-{timestamp}"
-os.makedirs(output_dir, exist_ok=True)
+    peft_config = LoraConfig(
+        r=cfg.r_peft,
+        lora_alpha=2 * cfg.r_peft,
+        lora_dropout=0.05,
+        # target_modules=[
+        #     "q_proj", "k_proj", "v_proj", "o_proj",
+        #     "gate_proj", "up_proj", "down_proj",
+        # ],
+        target_modules=["q_proj", "v_proj"],
+    )
 
-peft_config = LoraConfig(
-    r=R_PEFT,
-    lora_alpha=2 * R_PEFT,
-    lora_dropout=0.05,
-    # target_modules=[
-    #     "q_proj",
-    #     "k_proj",
-    #     "v_proj",
-    #     "o_proj",
-    #     "gate_proj",
-    #     "up_proj",
-    #     "down_proj",
-    # ],
-    target_modules=["q_proj", "v_proj"],
-)
+    reward_funcs = [
+        format_compliance_reward,
+        answer_correctness_reward,
+        embedding_reward_func_constructor_pubmedqa(
+            model=cfg.reward_embedding_model,
+            U_star=U_star,
+            pooling=cfg.pooling,
+            max_length=cfg.max_completion_length + 256,
+            answer_only=cfg.answer_only,
+            sentence_transformer=cfg.sentence_transformer,
+        ),
+    ]
+    reward_weights = [cfg.format_weight, float(not cfg.embed), float(cfg.embed)]
+    reward_weights = [w / sum(reward_weights) for w in reward_weights]
+    print(f"Reward weights: {reward_weights}")
 
-reward_funcs = [
-    format_compliance_reward,
-    answer_correctness_reward,
-    embedding_reward_func_constructor_pubmedqa(
-        model=REWARD_EMBEDDING_MODEL,
-        U_star=U_star,
-        pooling=POOLING,
-        max_length=MAX_COMPLETION_LENGTH + 256,
-        answer_only=ANSWER_ONLY,
-        sentence_transformer=SENTENCE_TRANSFORMER,
-    ),
-]
-reward_weights = [FORMAT_WEIGHT, float(not EMBED), float(EMBED)]
-reward_weights = [
-    w / sum(reward_weights) for w in reward_weights
-]  # Normalize weights to sum to 1
-print(f"Reward weights: {reward_weights}")
+    training_args = GRPOConfig(
+        do_eval=cfg.use_eval_dataset,
+        eval_on_start=cfg.use_eval_dataset,
+        learning_rate=cfg.learning_rate,
+        num_train_epochs=cfg.n_epochs,
+        max_steps=cfg.n_steps,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.05,
+        per_device_train_batch_size=cfg.per_device_train_batch_size,
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        per_device_eval_batch_size=2,
+        eval_accumulation_steps=8,
+        max_completion_length=cfg.max_completion_length,
+        max_prompt_length=cfg.max_prompt_length,
+        num_generations=cfg.num_generations,
+        beta=cfg.lam,
+        gradient_checkpointing=False,
+        # gradient_checkpointing_kwargs={"use_reentrant": False},
+        fp16=False,
+        bf16=True,
+        output_dir=output_dir,
+        logging_steps=1,
+        save_steps=cfg.save_steps,
+        report_to="tensorboard",
+        push_to_hub=False,
+        log_completions=True,
+        reward_weights=reward_weights,
+    )
 
-# Configure training arguments using GRPOConfig
-training_args = GRPOConfig(
-    do_eval=USE_EVAL_DATASET,
-    eval_on_start=USE_EVAL_DATASET,
-    learning_rate=5e-5,
-    num_train_epochs=N_EPOCHS,
-    max_steps=N_STEPS,  # Number of dataset passes. For full trainings, use `num_train_epochs` instead
-    lr_scheduler_type="cosine",
-    warmup_ratio=0.05,
-    # Parameters that control the data preprocessing
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=2,
-    per_device_eval_batch_size=2,
-    eval_accumulation_steps=8,
-    max_completion_length=MAX_COMPLETION_LENGTH,  # default: 256            # Max completion length produced during training
-    max_prompt_length=256,  # default: 512                # Max prompt length of the input prompt used for generation during training
-    # GRPO specific parameters
-    num_generations=8,  # 2, # default: 8                  # Number of generations produced during training for comparison
-    # num_generations_eval=4,
-    beta=LAMBDA,
-    gradient_checkpointing=False,
-    # gradient_checkpointing_kwargs={"use_reentrant": False},
-    fp16=False,
-    bf16=True,
-    # Parameters related to reporting and saving
-    output_dir=output_dir,  # Where to save model checkpoints and logs
-    logging_steps=1,  # Log training metrics every N steps
-    save_steps=20,  # Save model checkpoint every N steps
-    report_to="tensorboard",  # Experiment tracking tool
-    # trackio_space_id = output_dir,
-    # Hub integration
-    push_to_hub=False,
-    log_completions=True,
-    reward_weights=reward_weights,  # Weights for each reward function
-)
+    trainer = GRPOTrainer(
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=reward_funcs,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset if cfg.use_eval_dataset else None,
+        peft_config=peft_config,
+    )
 
-trainer = GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    reward_funcs=reward_funcs,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=test_dataset if USE_EVAL_DATASET else None,
-    peft_config=peft_config,
-)
+    # ##########################
+    # ******* Training *********
+    # ##########################
 
-# ##########################
-# ******* Training *********
-# ##########################
+    gpu_stats = torch.cuda.get_device_properties(0)
+    start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
+    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+    print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
+    print(f"{start_gpu_memory} GB of memory reserved.")
 
-# GPU memory stats before training
-gpu_stats = torch.cuda.get_device_properties(0)
-start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
-print(f"{start_gpu_memory} GB of memory reserved.")
+    torch.cuda.synchronize()
+    t0 = time.time()
+    trainer_stats = trainer.train()
+    torch.cuda.synchronize()
+    t1 = time.time()
+    print(f"Total training time: {round(t1 - t0, 2)} seconds.")
 
-torch.cuda.synchronize()
-t0 = time.time()
+    used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
+    used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
+    used_percentage = round(used_memory / max_memory * 100, 3)
+    lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
+    print(f"{trainer_stats.metrics['train_runtime']} seconds used for training.")
+    print(
+        f"{round(trainer_stats.metrics['train_runtime'] / 60, 2)} minutes used for training."
+    )
+    print(f"Peak reserved memory = {used_memory} GB.")
+    print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
+    print(f"Peak reserved memory % of max memory = {used_percentage} %.")
+    print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
 
-trainer_stats = trainer.train()  # training
+    trainer.save_model(output_dir)
+    # trainer.push_to_hub(dataset_name=dataset_id)
 
-torch.cuda.synchronize()
-t1 = time.time()
-print(f"Total training time: {round(t1 - t0, 2)} seconds.")
 
-# GPU memory stats after training
-used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
-used_percentage = round(used_memory / max_memory * 100, 3)
-lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
-print(f"{trainer_stats.metrics['train_runtime']} seconds used for training.")
-print(
-    f"{round(trainer_stats.metrics['train_runtime'] / 60, 2)} minutes used for training."
-)
-print(f"Peak reserved memory = {used_memory} GB.")
-print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
-print(f"Peak reserved memory % of max memory = {used_percentage} %.")
-print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
-
-# save model
-trainer.save_model(output_dir)
-# trainer.push_to_hub(dataset_name=dataset_id)
-
-# ################################
-# ******* Inference **************
-# ################################
+if __name__ == "__main__":
+    main(tyro.cli(TrainConfig))

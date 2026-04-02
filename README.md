@@ -1,60 +1,3 @@
-* v2: added bert reward
-* v3: fix bert reward (set minimum reward to -1000)
-* v4: bert reward set minimum reward to -100
-* v5: bert reward with the same pattern (regex) checks as equation reward / no format reward
-* v6: specific config for sft on gsm8k
-* v7: add U_star support with embedding reward + beta>0 (KL penalization)
-* v8: fix tokenizer issue
-* v9: sft on countdown
-* v10: investigating n_epochs vs n_steps
-* v11: warmup for grpo
-* v12: answer only or answer + rationale reward
-* v13: save every 50 steps
-* v14: rebuttal
-* v15: medical
-
-
-# GRPO Training Run Tracker (Detailed)
-
-## Qwen3-0.6B
-
-| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
-|----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | 20260127-105010 E | 20260127-144650 E | 20260127-150349 E | |
-| google/embeddinggemma-300m | id | 20260127-105022 E | 20260127-144713 E | 20260127-150404 E | |
-| google/embeddinggemma-300m | u_cov | 20260127-120937 E | 20260127-144918 E | 20260127-150422 E | |
-| google/embeddinggemma-300m | u_trace | 20260127-120925 E | 20260127-144929 E | 20260127-150414 E | |
-
-## Qwen3-1.7B
-
-| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
-|----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | 20260127-104959 | 20260127-160058 | 20260127-182825 | |
-| google/embeddinggemma-300m | id | 20260127-115236 | 20260127-164317 | 20260127-174819 | |
-| google/embeddinggemma-300m | u_cov | 20260127-153709 | 20260127-174236 | 20260127-174252 | |
-| google/embeddinggemma-300m | u_trace | 20260127-153241 | 20260127-174158 | 20260127-174207 | |
-
-## Qwen3-4B
-
-| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
-|----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | | | | |
-| google/embeddinggemma-300m | id | | | | |
-| google/embeddinggemma-300m | u_cov | | | | |
-| google/embeddinggemma-300m | u_trace | | | | |
-
-## Qwen3-8B
-
-| Embedder | Reward | Seed 1 | Seed 2 | Seed 3 | Status |
-|----------|--------|--------|--------|--------|--------|
-| google/embeddinggemma-300m | oracle | | | | |
-| google/embeddinggemma-300m | id | | | | |
-| google/embeddinggemma-300m | u_cov | | | | |
-| google/embeddinggemma-300m | u_trace | | | | |
-
-
-
-
 <div align="center">
 <h1>From Data to Rewards: a Bi-level Optimization Perspective on Maximum Likelihood Estimation</h1>
 
@@ -73,125 +16,212 @@ This repository contains the official implementation of the paper:
 ### 📝 Abstract:
 Generative models form the backbone of modern machine learning, underpinning state-of-the-art systems in text, vision, and multimodal applications. While Maximum Likelihood Estimation has traditionally served as the dominant training paradigm, recent work have highlighted its limitations, particularly in generalization and susceptibility to catastrophic forgetting compared to Reinforcement Learning techniques, such as Policy Gradient methods. However, these approaches depend on explicit reward signals, which are often unavailable in practice, leaving open the fundamental problem of how to align generative models when only high-quality datasets are accessible. In this work, we address this challenge via a Bilevel Optimization framework, where the reward function is treated as the optimization variable of an outer-level problem, while a policy gradient objective defines the inner-level. We then conduct a theoretical analysis of this optimization problem in a tractable setting and extract insights that, as we demonstrate, generalize to applications such as tabular classification and model-based reinforcement learning.
 
-## 📁 Project Structure
-
-```
-├── src/
-    ├── nll_to_po
-        ├── models
-            ├── dn_policy.py                # MLP-based stochastic policies
-            └── reward_network.py           # Reward parametrizations
-        ├── training
-            ├── loss.py                     # Loss functions (e.g., NLL, PG)
-            ├── reward.py                   # Reward function wrappers
-            ├── data.py                     # Data generators
-            └── utils.py
-├── notebook/                               # Experimental notebooks
-└── scripts/                                # Standalone scripts (e.g., mbrl.py)
-```
-
 ## 🚀 Installation
 
-### Basic Setup
-
-🔹 Create a conda (or micromamba, or venv) environment
+🔹 Create and activate a Python 3.12 environment (conda, micromamba, or venv):
 ```bash
 conda create -n nllpo python=3.12
-```
-
-🔹 Activate the environment
-```bash
 conda activate nllpo
 ```
 
-🔹 Install the base package (in editable mode)
+🔹 Install the base package (editable mode):
 ```bash
 pip install -e .
 ```
 
-### Optional Dependencies
+🔹 **For LLM training and evaluation** (GRPO, SFT, eval scripts):
+```bash
+pip install -e .[llm]
+```
 
-Install additional dependencies based on your experimental needs:
-
-🔹 **For developers** (includes pre-commit hooks 🛠️)
+🔹 **For developers** (pre-commit hooks for Ruff + Black):
 ```bash
 pip install -e .[dev]
 pre-commit install
 ```
-This will enable automatic code formatting and linting using Ruff.
 
-🔹 **For Model-Based Reinforcement Learning experiments**
+## 🤖 LLM Applications
+
+This repository implements GRPO and SFT training with learned embedding-based rewards, applied to two tasks: **Countdown** (mathematical reasoning) and **PubMedQA** (medical question answering). All training scripts are fully CLI-configurable via [tyro](https://brentyi.github.io/tyro/) — run any script with `--help` to see all options.
+
+### Countdown (mathematical reasoning)
+
+**GRPO training** — learns a reward via Mahalanobis distance in embedding space:
+
 ```bash
-pip install -e .[mbrl]
+# Single GPU
+python src/nll_to_po/llm/grpo_llm.py --help
+
+python src/nll_to_po/llm/grpo_llm.py \
+  --model-name Qwen/Qwen3-1.7B \
+  --embed True \
+  --reward-embedding-model google/embeddinggemma-300m \
+  --lam 0.001 \
+  --u-star-type id \
+  --n-steps 400
+
+# Multi-GPU with DeepSpeed ZeRO-3 (recommended for ≥4 GPUs)
+accelerate launch --config_file config/deepspeed_zero3.yaml \
+  src/nll_to_po/llm/grpo_llm.py \
+  --model-name Qwen/Qwen3-1.7B \
+  --embed True \
+  --reward-embedding-model google/embeddinggemma-300m \
+  --n-steps 400
+
+# Multi-GPU without DeepSpeed (e.g. 2–3 GPUs)
+accelerate launch --num_processes 2 --multi_gpu \
+  src/nll_to_po/llm/grpo_llm.py \
+  --model-name Qwen/Qwen3-1.7B \
+  --n-steps 400
 ```
 
-🔹 **For Classification experiments**
+**SFT baseline:**
+
+```bash
+# Single GPU
+python src/nll_to_po/llm/sft_llm.py \
+  --model-name Qwen/Qwen3-1.7B \
+  --num-train-epochs 10
+
+# Multi-GPU with DeepSpeed ZeRO-3
+accelerate launch --config_file config/deepspeed_zero3.yaml \
+  src/nll_to_po/llm/sft_llm.py \
+  --model-name Qwen/Qwen3-1.7B \
+  --num-train-epochs 10
+```
+
+### PubMedQA (medical question answering)
+
+The recommended pipeline runs SFT first, then GRPO with the SFT adapter merged in.
+
+**Step 1 — SFT:**
+
+```bash
+# Single GPU
+python src/nll_to_po/medical/sft_llm.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --max-steps 400
+
+# Multi-GPU with DeepSpeed ZeRO-3
+accelerate launch --config_file config/deepspeed_zero3.yaml \
+  src/nll_to_po/medical/sft_llm.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --max-steps 400
+```
+
+**Step 2 — GRPO** (pass the SFT checkpoint via `--adapter-path`):
+
+```bash
+# Single GPU
+python src/nll_to_po/medical/grpo_llm.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --adapter-path logs/Qwen3-0.6B/pubmed_qa/[peft][v15]trl-sft-TIMESTAMP \
+  --embed True \
+  --reward-embedding-model NeuML/pubmedbert-base-embeddings-8M \
+  --n-steps 400
+
+# Multi-GPU with DeepSpeed ZeRO-3
+accelerate launch --config_file config/deepspeed_zero3.yaml \
+  src/nll_to_po/medical/grpo_llm.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --adapter-path logs/Qwen3-0.6B/pubmed_qa/[peft][v15]trl-sft-TIMESTAMP \
+  --embed True \
+  --n-steps 400
+```
+
+### U_star precomputation (optional, improves reward scaling)
+
+Before training with `--u-star-type cov` or `--u-star-type trace`, precompute the embedding covariance:
+
+```bash
+python -m nll_to_po.llm.embed_cov \
+  --model_name google/embeddinggemma-300m \
+  --dataset_name HuggingFaceTB/Countdown-Task-GOLD \
+  --output_path results/cov/ \
+  --is_sentence_transformer True
+```
+
+### Evaluation
+
+```bash
+# Countdown task accuracy (single adapter)
+python scripts/eval_countdown.py \
+  --model_name Qwen/Qwen3-1.7B \
+  --adapter_path logs/.../checkpoint-400
+
+# Countdown task — sweep all checkpoints in a run directory
+python scripts/eval_all_checkpoints.py \
+  --model_name Qwen/Qwen3-1.7B \
+  --adapter_base_path logs/.../run-dir \
+  --checkpoint_step 20 \
+  --gpu_ids 0,1,2
+
+# PubMedQA accuracy (multi-GPU)
+accelerate launch --num_processes 3 --multi_gpu \
+  scripts/eval_pubmed_accelerate.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --adapter-path logs/.../checkpoint-400 \
+  --batch-size 64
+
+# Standard benchmarks via lm-eval-harness (e.g. MMLU, MedMCQA)
+python scripts/eval_harness.py \
+  --model-name Qwen/Qwen3-0.6B \
+  --adapter-path logs/.../checkpoint-400 \
+  --tasks mmlu,medmcqa \
+  --gpu-ids 0
+```
+
+Checkpoints are saved to `logs/{model}/{dataset}/{tags}trl-{method}-{timestamp}/checkpoint-{step}/`. TensorBoard logs are in the same directory under `runs/`.
+
+## 📁 Project Structure
+
+```
+├── src/nll_to_po/
+│   ├── llm/
+│   │   ├── grpo_llm.py         # GRPO training — Countdown
+│   │   ├── sft_llm.py          # SFT training — Countdown
+│   │   ├── grpo_vlm.py         # GRPO training — Vision-Language Models
+│   │   └── embed_cov.py        # Embedding covariance / U_star computation
+│   ├── medical/
+│   │   ├── grpo_llm.py         # GRPO training — PubMedQA
+│   │   ├── sft_llm.py          # SFT training — PubMedQA
+│   │   └── utils.py            # Prompt formatting, reward functions, dataset prep
+│   └── training/
+│       └── reward.py           # Reward abstractions (Mahalanobis, embedding-based)
+├── scripts/
+│   ├── eval_countdown.py       # Countdown task evaluation
+│   ├── eval_all_checkpoints.py # Batch checkpoint evaluation (Countdown)
+│   ├── eval_pubmed_accelerate.py  # PubMedQA evaluation (multi-GPU)
+│   └── eval_harness.py         # Standard benchmarks via lm-eval-harness
+└── config/
+    └── deepspeed_zero3.yaml    # Accelerate + DeepSpeed ZeRO-3 config (8 GPUs)
+```
+
+## 🧪 Paper Experiments
+
+The following notebooks and scripts reproduce the results from the paper. They are no longer actively maintained.
+
+### Section 4.2 — Synthetic data
+* [`notebook/4-2-fig1-synthetic.ipynb`](notebook/4-2-fig1-synthetic.ipynb)
+* [`notebook/4-2-fig2-distribution.ipynb`](notebook/4-2-fig2-distribution.ipynb)
+
+### Section 5.2 — Implicit differentiation solver
+* [`notebook/5-2-implicit_diff.ipynb`](notebook/5-2-implicit_diff.ipynb)
+
+### Section 6.1 — Tabular classification
+* [`notebook/6-1-tabular_classification.ipynb`](notebook/6-1-tabular_classification.ipynb)
 ```bash
 pip install -e .[classif]
 ```
 
-🔹 **For Bilevel optimization experiments (implicit and explicit differentiation notebooks)**
-```bash
-pip install -e .[bilevel]
-```
-
-
-## 🧪 Experiments
-
-This repository contains several experimental notebooks and scripts. Each experiment corresponds to specific sections in the paper:
-
-###  Section 4.2 - Figure 1: Synthetic data experiment
-* [`notebook/4-2-fig1-synthetic.ipynb`](notebook/4-2-fig1-synthetic.ipynb)
-
-###  Section 4.2 - Figure 2: Comparison of the learned distributions
-* [`notebook/4-2-fig2-distribution.ipynb`](notebook/4-2-fig2-distribution.ipynb)
-
-###  Section 5.2 - Figure 3: Implicit differentiation solver on synthetic data
-* [`notebook/5-2-implicit_diff.ipynb`](notebook/5-2-implicit_diff.ipynb)
-
-###  Section 6.1 - Table 1 and 2: Tabular classification
-* [`notebook/6-1-tabular_classification.ipynb`](notebook/6-1-tabular_classification.ipynb)
-
-###  Section 6.2 - Table 3: MBRL
-
-#### 🤖 Running the MBRL experiment: [`scripts/mbrl.py`](scripts/mbrl.py)
-
-- Implements the MBRL experimental pipeline
-- Requires the `mbrl` optional dependencies
+### Section 6.2 — Model-Based RL
 
 ```bash
-# Make sure you have installed the mbrl dependencies
 pip install -e .[mbrl]
-
-# Run the MBRL script with default hyperparameters
-python scripts/mbrl.py --data_proportion 0.1 --learning_rate 0.001 --n_experiments 5 --dataset "mujoco/halfcheetah/simple-v0" --n_updates 400 --batch_size -1 --entropy_weights 1.0
-
-# See all options
-python scripts/mbrl.py --help
+python scripts/mbrl.py --dataset "mujoco/halfcheetah/simple-v0" --n_experiments 5
 ```
-- To run the implicit diff solver on mbrl data: [`notebook/6-2-implicit_diff_mbrl.ipynb`](notebook/6-2-implicit_diff_mbrl.ipynb)
-- The optimal reward constant $u^\star_{\text{im}}$ can then be set in a dictionary at the beginning of the file [`scripts/mbrl.py`](scripts/mbrl.py)
-
-```python
-IMPLICIT_DIFF_U_VALUES = {
-    "mujoco/halfcheetah/medium-v0": 0.08,
-    "mujoco/halfcheetah/expert-v0": 0.15,
-    "mujoco/halfcheetah/simple-v0": 0.115,
-}
-```
-
-#### 📈 Results Visualization: [`notebook/6-2-table_mbrl.ipynb`](notebook/6-2-table_mbrl.ipynb)
-- Generates Table 3 entries for MBRL results
-- Analyzes the output from the `mbrl.py` script
-- Run this notebook after completing the MBRL training (set the path to the results stored in a `*.parquet` file)
-
-```python
-results_path = "../logs/mbrl_results/results_mujoco_halfcheetah_medium-v0/results_20250924_211418.parquet"
-results_df = pd.read_parquet(results_path)
-```
-
-### Bonus: Explicit differentiation solver on synthetic data
-* [`notebook/explicit_gradient.ipynb`](notebook/explicit_gradient.ipynb)
+- Implicit diff solver: [`notebook/6-2-implicit_diff_mbrl.ipynb`](notebook/6-2-implicit_diff_mbrl.ipynb)
+- Results visualization: [`notebook/6-2-table_mbrl.ipynb`](notebook/6-2-table_mbrl.ipynb)
 
 ## ⚖️ License
 
