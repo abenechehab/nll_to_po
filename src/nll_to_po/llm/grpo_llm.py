@@ -30,13 +30,13 @@ OUTPUT_DIR_ROOT = "logs"
 MODEL_NAME = "Qwen/Qwen3-1.7B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
 DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
 DATASET_SIZE = -1
-VERSION = "v13"
+VERSION = "v14"
 EMBED = True
 REWARD_EMBEDDING_MODEL = (
     "google/embeddinggemma-300m"  # "google/gemma-3-1b-it"  # "roberta-large"
 )
 LAMBDA = 0.001
-U_STAR_TYPE = "trace"  # "cov" or "trace" or else
+U_STAR_TYPE = "id"  # "cov" or "trace" or else
 POOLING = "cls"  # "mean" or "cls" (for causalLM models, "cls" means last token)
 USE_PEFT = True
 R_PEFT = 8  # Rank for PEFT LoRA
@@ -228,8 +228,8 @@ training_args = GRPOConfig(
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
     # Parameters that control the data preprocessing
-    per_device_train_batch_size=8,
-    gradient_accumulation_steps=1,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=2,
     per_device_eval_batch_size=2,
     eval_accumulation_steps=8,
     max_completion_length=MAX_COMPLETION_LENGTH,  # default: 256            # Max completion length produced during training

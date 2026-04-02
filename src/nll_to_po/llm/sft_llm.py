@@ -14,9 +14,9 @@ from nll_to_po.training.data import SYSTEM_PROMPT_ORCA
 
 # FP8 = False
 OUTPUT_DIR_ROOT = "logs"
-MODEL_NAME = "Qwen/Qwen3-0.6B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
+MODEL_NAME = "Qwen/Qwen3-4B"  # "openai/gpt-oss-120b"  # "Qwen/Qwen3-8B"
 DATASET_NAME = "HuggingFaceTB/Countdown-Task-GOLD"  # "HuggingFaceTB/Countdown-Task-GOLD"  # "Jiayi-Pan/Countdown-Tasks-3to4"  # "openai/gsm8k"  # "microsoft/orca-math-word-problems-200k"
-VERSION = "v9"
+VERSION = "v13"
 USE_RATIONALE_GSM8K = False
 # DATASET_SIZE = 50000
 USE_PEFT = True
@@ -146,15 +146,17 @@ peft_config = LoraConfig(
 training_args = SFTConfig(
     # Training schedule / optimization
     per_device_train_batch_size=8,  # Batch size per GPU
-    gradient_accumulation_steps=4,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
-    warmup_steps=100,
+    gradient_accumulation_steps=1,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
     num_train_epochs=10,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
     # max_steps = 200,
     learning_rate=5e-5,  # Learning rate for the optimizer
     optim="paged_adamw_8bit",  # Optimizer
+    lr_scheduler_type="cosine",
+    warmup_ratio=0.05,
     # Logging / reporting
     logging_steps=10,  # Log training metrics every N steps
     report_to="tensorboard",  # Experiment tracking tool
+    save_steps=20,  # Save model checkpoint every N steps
     # trackio_space_id=output_dir,          # HF Space where the experiment tracking will be saved
     output_dir=output_dir,  # Where to save model checkpoints and logs
     max_length=2048,  # Maximum input sequence length

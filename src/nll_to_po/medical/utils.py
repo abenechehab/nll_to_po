@@ -139,7 +139,7 @@ def embedding_reward_func_constructor_pubmedqa(
             train_matrix=False,
             max_length=max_length,
         )
-        min_reward = -100.0
+        min_reward = -1e6
     else:
         embedder = RM.AutoModelEmbeddingMahalanobisReward(
             model_name=model,
@@ -148,7 +148,7 @@ def embedding_reward_func_constructor_pubmedqa(
             max_length=max_length,
             pooling=pooling,
         )
-        min_reward = -300.0
+        min_reward = -1e6
 
     if U_star is not None:
         embedder.set_matrix(matrix=torch.nn.Parameter(U_star))

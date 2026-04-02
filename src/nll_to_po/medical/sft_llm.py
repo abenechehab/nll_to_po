@@ -94,8 +94,8 @@ training_args = SFTConfig(
     # Training schedule / optimization
     per_device_train_batch_size=8,  # Batch size per GPU
     gradient_accumulation_steps=2,  # Gradients are accumulated over multiple steps → effective batch size = 2 * 8 = 16
-    num_train_epochs=10,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
-    # max_steps = 200,
+    # num_train_epochs=10,  # Number of full dataset passes. For shorter training, use `max_steps` instead (this case)
+    max_steps=400,
     learning_rate=5e-5,  # Learning rate for the optimizer
     optim="paged_adamw_8bit",  # Optimizer
     lr_scheduler_type="cosine",

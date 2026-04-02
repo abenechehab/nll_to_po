@@ -11,6 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesConfig
 from datasets import load_dataset
 from trl import GRPOTrainer, GRPOConfig  # , get_peft_config, ModelConfig
+from peft import PeftModel
 
 from nll_to_po.training.utils import set_seed_everywhere
 
@@ -47,6 +48,7 @@ N_EPOCHS = 1
 N_STEPS = 400
 ANSWER_ONLY = False
 SENTENCE_TRANSFORMER = True  # If True, use SentenceTransformer for embedding; else use BERT-based / causal models
+ADAPTER_PATH = "logs/Qwen3-0.6B/pubmed_qa/[peft][v15]trl-sft-20260310-134800"
 
 set_seed_everywhere(SEED)
 
@@ -98,6 +100,9 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 tokenizer = AutoProcessor.from_pretrained(MODEL_NAME, padding_side="left")
+if ADAPTER_PATH is not None:
+    model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+    model = model.merge_and_unload()
 
 # #################################
 # ******** Load Dataset ***********
@@ -123,7 +128,7 @@ print(f"one training example: {train_dataset[0]}")
 # #######################################
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME.split('/')[-1]}/{DATASET_NAME.split('/')[-1]}/{'[' + REWARD_EMBEDDING_MODEL.split('/')[-1] + ']' + '[' + label + ']' + '[' + POOLING + ']' if EMBED else ''}[{LAMBDA}]{'[peft_' + str(R_PEFT) + ']' if USE_PEFT else ''}[{'s:' + str(N_STEPS) + ']' if N_STEPS > 0 else 'e:' + str(N_EPOCHS)}[{VERSION}]trl-grpo-{timestamp}"
+output_dir = f"{OUTPUT_DIR_ROOT}/{MODEL_NAME.split('/')[-1]}/{DATASET_NAME.split('/')[-1]}/{'[' + REWARD_EMBEDDING_MODEL.split('/')[-1] + ']' + '[' + label + ']' + '[' + POOLING + ']' if EMBED else ''}[{LAMBDA}]{'[peft_' + str(R_PEFT) + ']' if USE_PEFT else ''}[{'s:' + str(N_STEPS) + ']' if N_STEPS > 0 else 'e:' + str(N_EPOCHS)}[{VERSION}][adapter-{ADAPTER_PATH.split('/')[-1]}]trl-grpo-{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
 peft_config = LoraConfig(
