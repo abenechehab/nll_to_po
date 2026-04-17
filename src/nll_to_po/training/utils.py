@@ -142,12 +142,12 @@ def train_single_policy(
             batch_count += 1
 
             if return_dist:
-                assert len(train_dataloader) == 1, (
-                    "[batch size] we must be in the single data point regime"
-                )
-                assert torch.all(torch.all(X == X[0:1], dim=0)), (
-                    "[input] we must be in the single data point regime"
-                )
+                assert (
+                    len(train_dataloader) == 1
+                ), "[batch size] we must be in the single data point regime"
+                assert torch.all(
+                    torch.all(X == X[0:1], dim=0)
+                ), "[input] we must be in the single data point regime"
                 if "dist" in metrics:
                     dist.append(metrics["dist"])
 

@@ -131,9 +131,9 @@ class EmbeddingMahalanobisReward(nn.Module):
         train_matrix: bool = True,
     ):
         super().__init__()
-        assert train_encoder or train_matrix, (
-            "At least one of train_encoder or train_matrix must be True"
-        )
+        assert (
+            train_encoder or train_matrix
+        ), "At least one of train_encoder or train_matrix must be True"
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_sizes[0]),
             nn.ReLU(),
@@ -182,9 +182,10 @@ class BertEmbeddingMahalanobisReward(torch.nn.Module):
         self.max_length = max_length
 
         # Pooling strategy
-        assert pooling in ["mean", "cls"], (
-            f"pooling must be 'mean' or 'cls', got '{pooling}'"
-        )
+        assert pooling in [
+            "mean",
+            "cls",
+        ], f"pooling must be 'mean' or 'cls', got '{pooling}'"
         self.pooling = pooling
 
         # Freeze the BERT model if train_encoder is False
@@ -421,9 +422,9 @@ class SentenceTransformerMahalanobisReward(nn.Module):
     def set_matrix(self, matrix: torch.Tensor, trainable: bool = False):
         """Set the Mahalanobis matrix with optional trainability."""
         hidden = self.model.get_sentence_embedding_dimension()
-        assert matrix.shape == (hidden, hidden), (
-            f"Matrix shape {matrix.shape} doesn't match embedding dim ({hidden}, {hidden})"
-        )
+        assert (
+            matrix.shape == (hidden, hidden)
+        ), f"Matrix shape {matrix.shape} doesn't match embedding dim ({hidden}, {hidden})"
 
         self.matrix = nn.Parameter(
             matrix.to(self._device()),

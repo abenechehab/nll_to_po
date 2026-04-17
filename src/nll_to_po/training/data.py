@@ -151,9 +151,9 @@ def generate_data_linear(
     init_dist_n_samples: int = 1,
     A: Optional[torch.Tensor] = None,
 ):
-    assert input_dim == output_dim, (
-        f"input dim {input_dim} is different from output dim {output_dim}"
-    )
+    assert (
+        input_dim == output_dim
+    ), f"input dim {input_dim} is different from output dim {output_dim}"
 
     # resample parameters
     if A is None:
@@ -232,9 +232,9 @@ def generate_data_linear_noloader(
     init_dist_n_samples: int = 1,
     A: Optional[torch.Tensor] = None,
 ):
-    assert input_dim == output_dim, (
-        f"input dim {input_dim} is different from output dim {output_dim}"
-    )
+    assert (
+        input_dim == output_dim
+    ), f"input dim {input_dim} is different from output dim {output_dim}"
 
     # resample parameters
     if A is None:
@@ -331,9 +331,9 @@ def generate_data_minari_noloader(
 
     Returns: (train_loader, val_loader, test_loader, {input_dim, output_dim})
     """
-    assert train_size + test_size <= 1.0, (
-        "train_size + test_size must be <= 1.0 (for validation)"
-    )
+    assert (
+        train_size + test_size <= 1.0
+    ), "train_size + test_size must be <= 1.0 (for validation)"
 
     dataset = minari.load_dataset(dataset_name, download=True)
     dataset.set_seed(seed=int(seed))
@@ -417,9 +417,9 @@ def generate_data_minari(
 
     Returns: (train_loader, val_loader, test_loader, {input_dim, output_dim})
     """
-    assert train_size + test_size <= 1.0, (
-        "train_size + test_size must be <= 1.0 (for validation)"
-    )
+    assert (
+        train_size + test_size <= 1.0
+    ), "train_size + test_size must be <= 1.0 (for validation)"
 
     seed = np.random.randint(0, 1_000_000)
 

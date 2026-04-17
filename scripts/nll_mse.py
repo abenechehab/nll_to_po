@@ -37,9 +37,9 @@ class ExperimentConfig:
     init_dist_loc_list: List[float] = [1.0, 7.0]
 
     def __post_init__(self):
-        assert len(self.n_updates_list) == len(self.init_dist_loc_list), (
-            "n updates must match init dist loc"
-        )
+        assert len(self.n_updates_list) == len(
+            self.init_dist_loc_list
+        ), "n updates must match init dist loc"
 
 
 def main(args: ExperimentConfig):

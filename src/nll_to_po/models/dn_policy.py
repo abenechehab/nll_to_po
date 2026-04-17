@@ -30,9 +30,9 @@ class MLPPolicy(nn.Module):
         """
 
         super().__init__()
-        assert not (use_batchnorm and use_layernorm), (
-            "Cannot use both batchnorm and layernorm."
-        )
+        assert not (
+            use_batchnorm and use_layernorm
+        ), "Cannot use both batchnorm and layernorm."
         layers = []
         dims = [input_dim] + hidden_sizes
         for i in range(len(dims) - 1):

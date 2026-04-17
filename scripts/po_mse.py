@@ -38,9 +38,9 @@ class ExperimentConfig:
     n_generations_list: List[int] = [1, 2, 5, 10, 25, 50, 100]
 
     def __post_init__(self):
-        assert len(self.n_updates_list) == len(self.init_dist_loc_list), (
-            "n updates must match init dist loc"
-        )
+        assert len(self.n_updates_list) == len(
+            self.init_dist_loc_list
+        ), "n updates must match init dist loc"
 
 
 def main(args: ExperimentConfig):
