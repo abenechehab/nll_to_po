@@ -51,6 +51,8 @@ class TrainConfig:
     """Per-device training batch size."""
     gradient_accumulation_steps: int = 1
     """Gradient accumulation steps (effective batch = batch_size * accum * n_gpus)."""
+    use_flash_attention: bool = False
+    """Whether to use Flash Attention (if supported by the GPU) for training."""
 
 
 def main(cfg: TrainConfig) -> None:
@@ -60,7 +62,7 @@ def main(cfg: TrainConfig) -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model_name,
-        attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+        attn_implementation="flash_attention_2" if cfg.use_flash_attention else None,
         dtype="bfloat16",  # Change to bfloat16 if GPU has support
         use_cache=True,  # Whether to cache attention outputs to speed up inference
         # quantization_config=BitsAndBytesConfig(
@@ -69,7 +71,7 @@ def main(cfg: TrainConfig) -> None:
         #     # bnb_4bit_use_double_quant=True,
         #     # bnb_4bit_quant_type="nf4"
         # )
-        device_map="auto",
+        # device_map="auto",
     )
     tokenizer = AutoProcessor.from_pretrained(cfg.model_name, padding_side="left")
 
@@ -78,7 +80,9 @@ def main(cfg: TrainConfig) -> None:
     # #################################
 
     if "HuggingFaceTB" in cfg.dataset_name:
-        dataset = load_dataset(cfg.dataset_name, "verified_Qwen2.5-7B-Instruct")["train"]
+        dataset = load_dataset(cfg.dataset_name, "verified_Qwen2.5-7B-Instruct")[
+            "train"
+        ]
     elif "gsm8k" in cfg.dataset_name:
         dataset = load_dataset(cfg.dataset_name, "main", split="train")
     elif "orca" in cfg.dataset_name:
