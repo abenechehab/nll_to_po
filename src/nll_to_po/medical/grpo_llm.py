@@ -45,6 +45,10 @@ class TrainConfig:
     """Random seed. If None, a random seed is generated."""
     adapter_path: Optional[str] = None
     """Path to a SFT adapter (local dir) to load and merge before GRPO training."""
+    use_flash_attention: bool = False
+    """Whether to use Flash Attention (if supported by the GPU) for training."""
+    base_model: bool = False
+    """Whether the model is a base (non-SF-tuned) model that requires special token and template setup."""
 
     # Reward
     format_weight: float = 0.5
@@ -133,7 +137,7 @@ def main(cfg: TrainConfig) -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model_name,
-        attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+        attn_implementation="flash_attention_2" if cfg.use_flash_attention else None,
         dtype="bfloat16",  # Change to bfloat16 if GPU has support
         use_cache=True,  # Whether to cache attention outputs to speed up inference
         # quantization_config=BitsAndBytesConfig(
@@ -142,9 +146,51 @@ def main(cfg: TrainConfig) -> None:
         #     # bnb_4bit_use_double_quant=True,
         #     # bnb_4bit_quant_type="nf4"
         # )
-        device_map="auto",
+        device_map=None,  # "auto",
     )
     tokenizer = AutoProcessor.from_pretrained(cfg.model_name, padding_side="left")
+
+    # ---------- is Base model ----------
+    if cfg.base_model:
+        print("Setting chat template for tokenizer because the model is not SF-tuned")
+
+        # TODO: update this chat template with pubmedqa one
+
+        # 1. Define Special Tokens
+        # Base models often lack these markers. We add them so the model knows
+        # where 'User' ends and 'Assistant' (reasoning) begins.
+        special_tokens = {
+            "additional_special_tokens": [
+                "<|im_start|>",
+                "<|im_end|>",
+                "<think>",
+                "</think>",
+            ]
+        }
+        tokenizer.add_special_tokens(special_tokens)
+
+        # 2. Set Pad Token
+        # Base models usually don't have a pad_token defined.
+        # Using EOS (End of Sentence) is the standard workaround.
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        # 3. Inject the Chat Template
+        # This specific template forces the model to start every response with <think>
+        # which is critical for the Countdown RL task.
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+            "{{ '<|im_start|>assistant\n<think>\n' }}"
+            "{% endif %}"
+        )
+
+        # IMPORTANT: If you added tokens, you must resize the model embeddings
+        # after you load the model, otherwise it will crash during training!
+        model.resize_token_embeddings(len(tokenizer))
+
     if cfg.adapter_path is not None:
         model = PeftModel.from_pretrained(model, cfg.adapter_path)
         model = model.merge_and_unload()
@@ -153,7 +199,7 @@ def main(cfg: TrainConfig) -> None:
     # ******** Load Dataset ***********
     # #################################
 
-    dataset = load_dataset(cfg.dataset_name)
+    dataset = load_dataset(cfg.dataset_name, trust_remote_code=True)
     dataset = prepare_dataset(dataset["train"])
     if cfg.dataset_size > 0:
         dataset = dataset.select(range(cfg.dataset_size))
@@ -243,7 +289,7 @@ def main(cfg: TrainConfig) -> None:
         save_steps=cfg.save_steps,
         report_to="tensorboard",
         push_to_hub=False,
-        log_completions=True,
+        log_completions=False,
         reward_weights=reward_weights,
     )
 
