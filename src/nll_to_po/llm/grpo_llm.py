@@ -8,7 +8,7 @@ import secrets
 from typing import Optional
 
 import tyro
-from peft import LoraConfig
+from peft import LoraConfig, PeftModel
 import torch
 
 from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesConfig
@@ -43,6 +43,12 @@ class TrainConfig:
     """Version tag appended to the output directory name."""
     seed: Optional[int] = None
     """Random seed. If None, a random seed is generated."""
+    use_flash_attention: bool = False
+    """Whether to use Flash Attention (if supported by the GPU) for training."""
+    base_model: bool = False
+    """Whether the model is a base (non-SF-tuned) model that requires special token and template setup."""
+    adapter_path: Optional[str] = None
+    """Path to a SFT adapter (local dir) to load and merge before GRPO training."""
 
     # Reward
     embed: bool = True
@@ -129,7 +135,7 @@ def main(cfg: TrainConfig) -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model_name,
-        attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+        attn_implementation="flash_attention_2" if cfg.use_flash_attention else None,
         dtype="bfloat16",  # Change to bfloat16 if GPU has support
         use_cache=True,  # Whether to cache attention outputs to speed up inference
         # quantization_config=BitsAndBytesConfig(
@@ -138,16 +144,61 @@ def main(cfg: TrainConfig) -> None:
         #     # bnb_4bit_use_double_quant=True,
         #     # bnb_4bit_quant_type="nf4"
         # )
-        device_map="auto",
+        # device_map="auto",
     )
     tokenizer = AutoProcessor.from_pretrained(cfg.model_name, padding_side="left")
+
+    # ---------- is Base model ----------
+    if cfg.base_model:
+        print("Setting chat template for tokenizer because the model is not SF-tuned")
+
+        # 1. Define Special Tokens
+        # Base models often lack these markers. We add them so the model knows
+        # where 'User' ends and 'Assistant' (reasoning) begins.
+        special_tokens = {
+            "additional_special_tokens": [
+                "<|im_start|>",
+                "<|im_end|>",
+                "<think>",
+                "</think>",
+            ]
+        }
+        tokenizer.add_special_tokens(special_tokens)
+
+        # 2. Set Pad Token
+        # Base models usually don't have a pad_token defined.
+        # Using EOS (End of Sentence) is the standard workaround.
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        # 3. Inject the Chat Template
+        # This specific template forces the model to start every response with <think>
+        # which is critical for the Countdown RL task.
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+            "{{ '<|im_start|>assistant\n<think>\n' }}"
+            "{% endif %}"
+        )
+
+        # IMPORTANT: If you added tokens, you must resize the model embeddings
+        # after you load the model, otherwise it will crash during training!
+        model.resize_token_embeddings(len(tokenizer))
+
+    if cfg.adapter_path is not None:
+        model = PeftModel.from_pretrained(model, cfg.adapter_path)
+        model = model.merge_and_unload()
 
     # #################################
     # ******** Load Dataset ***********
     # #################################
 
     if "HuggingFaceTB" in cfg.dataset_name:
-        dataset = load_dataset(cfg.dataset_name, "verified_Qwen2.5-7B-Instruct")["train"]
+        dataset = load_dataset(cfg.dataset_name, "verified_Qwen2.5-7B-Instruct")[
+            "train"
+        ]
     elif "gsm8k" in cfg.dataset_name:
         dataset = load_dataset(cfg.dataset_name, "main", split="train")
     else:
@@ -156,7 +207,9 @@ def main(cfg: TrainConfig) -> None:
     if "HuggingFaceTB" in cfg.dataset_name:
         from nll_to_po.training.data import generate_r1_prompt_answer
 
-        dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"], tokenizer))
+        dataset = dataset.map(
+            lambda x: generate_r1_prompt_answer(x["messages"], tokenizer)
+        )
     elif "gsm8k" in cfg.dataset_name:
 
         def format_gsm8k(example):
@@ -211,10 +264,13 @@ def main(cfg: TrainConfig) -> None:
     )
     steps_tag = f"s:{cfg.n_steps}" if cfg.n_steps > 0 else f"e:{cfg.n_epochs}"
     peft_tag = f"[peft_{cfg.r_peft}]" if cfg.use_peft else ""
+    adapter_tag = (
+        f"[adapter-{cfg.adapter_path.split('/')[-1]}]" if cfg.adapter_path else ""
+    )
     output_dir = (
         f"{cfg.output_dir_root}/{cfg.model_name.split('/')[-1]}/"
         f"{cfg.dataset_name.split('/')[-1]}/"
-        f"{embed_tag}[{cfg.lam}]{peft_tag}[{steps_tag}][{cfg.version}]trl-grpo-{timestamp}"
+        f"{embed_tag}[{cfg.lam}]{peft_tag}[{steps_tag}][{cfg.version}]{adapter_tag}trl-grpo-{timestamp}"
     )
     os.makedirs(output_dir, exist_ok=True)
 
