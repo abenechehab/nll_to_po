@@ -93,7 +93,7 @@ class EvalConfig:
     """Cap the number of test samples (useful for quick debugging)."""
 
     # ── output ───────────────────────────────────────────────────────────────
-    save_results: Optional[str] = None
+    save_results: Optional[str] = "results/results_pubmed.json"
     """Path to a JSON file where results are appended."""
 
     verbose: int = 0
