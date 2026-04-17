@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import tyro
-from peft import LoraConfig
+from peft import LoraConfig, PeftModel
 import torch
 
 from transformers import AutoModelForCausalLM, AutoProcessor  # , BitsAndBytesConfig
@@ -27,6 +27,10 @@ class TrainConfig:
     """Root directory for checkpoints and TensorBoard logs."""
     version: str = "v15"
     """Version tag appended to the output directory name."""
+    use_flash_attention: bool = False
+    """Whether to use Flash Attention (if supported by the GPU) for training."""
+    adapter_path: str | None = None
+    """Path to a SFT adapter (local dir) to load and merge before GRPO training."""
 
     # PEFT / LoRA
     use_peft: bool = True
@@ -56,7 +60,7 @@ def main(cfg: TrainConfig) -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model_name,
-        attn_implementation="flash_attention_2",  # Change to Flash Attention if GPU has support
+        attn_implementation="flash_attention_2" if cfg.use_flash_attention else None,
         dtype="bfloat16",  # Change to bfloat16 if GPU has support
         use_cache=True,  # Whether to cache attention outputs to speed up inference
         # quantization_config=BitsAndBytesConfig(
@@ -65,9 +69,13 @@ def main(cfg: TrainConfig) -> None:
         #     # bnb_4bit_use_double_quant=True,
         #     # bnb_4bit_quant_type="nf4"
         # )
-        device_map="auto",
+        device_map=None,  # "auto",
     )
     tokenizer = AutoProcessor.from_pretrained(cfg.model_name, padding_side="left")
+
+    if cfg.adapter_path is not None:
+        model = PeftModel.from_pretrained(model, cfg.adapter_path)
+        model = model.merge_and_unload()
 
     # #################################
     # ******** Load Dataset ***********
@@ -88,10 +96,13 @@ def main(cfg: TrainConfig) -> None:
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     peft_tag = "[peft]" if cfg.use_peft else ""
+    adapter_tag = (
+        f"[adapter-{cfg.adapter_path.split('/')[-1]}]" if cfg.adapter_path else ""
+    )
     output_dir = (
         f"{cfg.output_dir_root}/{cfg.model_name.split('/')[-1]}/"
         f"{cfg.dataset_name.split('/')[-1]}/"
-        f"{peft_tag}[{cfg.version}]trl-sft-{timestamp}"
+        f"{peft_tag}{adapter_tag}[{cfg.version}]trl-sft-{timestamp}"
     )
     os.makedirs(output_dir, exist_ok=True)
 
