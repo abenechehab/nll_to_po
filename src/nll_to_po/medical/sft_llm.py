@@ -1,4 +1,5 @@
 import os
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
 
 from nll_to_po.medical.utils import prepare_sft_dataset
+from nll_to_po.training.utils import set_seed_everywhere
 
 
 @dataclass
@@ -52,8 +54,14 @@ class TrainConfig:
     gradient_accumulation_steps: int = 2
     """Gradient accumulation steps (effective batch = batch_size * accum * n_gpus)."""
 
+    seed: int | None = None
+    """Random seed. If None, a random seed is generated."""
+
 
 def main(cfg: TrainConfig) -> None:
+    seed = cfg.seed if cfg.seed is not None else secrets.randbits(32)
+    set_seed_everywhere(seed)
+    
     # ###########################################
     # ******** Load Model & Tokenizer ***********
     # ###########################################
