@@ -2,7 +2,8 @@
 Distributed evaluation of fine-tuned LLMs on the PubMedQA test set.
 
 Supports evaluating a single adapter or sweeping over multiple checkpoints
-found under a common training run directory.
+found under a common training run directory, with optional pre-adapters
+that are loaded and merged once before iterating over checkpoints.
 
 Usage (single adapter):
     accelerate launch --num_processes 3 --multi_gpu eval_pubmed_accelerate.py \
@@ -10,10 +11,11 @@ Usage (single adapter):
         --adapter-path ./logs/.../checkpoint-200 \
         --batch-size 64
 
-Usage (all checkpoints in a run):
+Usage (all checkpoints with pre-adapters):
     accelerate launch --num_processes 3 --multi_gpu eval_pubmed_accelerate.py \
         --model-name Qwen/Qwen3-0.6B \
         --adapter-base-path ./logs/.../[peft][v15]trl-sft-... \
+        --pre-adapters path/to/sft-adapter path/to/grpo-adapter \
         --checkpoint-step 20 \
         --batch-size 64
 
@@ -26,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from dataclasses import field
 from pathlib import Path
 from typing import Optional
 
@@ -81,6 +84,12 @@ class EvalConfig:
     checkpoints: Optional[str] = None
     """Comma-separated list of specific checkpoint step numbers
     (e.g. '20,40,100'). Overrides start/end/step filters."""
+
+    # ── pre-adapters ─────────────────────────────────────────────────────────
+    pre_adapters: list[str] = field(default_factory=list)
+    """Ordered list of adapter paths to load & merge into the base model
+    *before* applying each checkpoint adapter.  These should mirror the
+    adapters that were merged prior to fine-tuning."""
 
     # ── generation ───────────────────────────────────────────────────────────
     batch_size: int = 64
@@ -144,18 +153,56 @@ def find_checkpoints(cfg: EvalConfig) -> list[Path]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Model loading
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def load_base_model_with_pre_adapters(
+    model_name: str,
+    pre_adapters: list[str],
+    device: torch.device,
+    is_main: bool,
+) -> AutoModelForCausalLM:
+    """Load the base model, then sequentially load & merge each pre-adapter."""
+    if is_main:
+        print(f"Loading base model: {model_name}")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map={"": device},
+    )
+
+    for i, adapter_path in enumerate(pre_adapters, 1):
+        if is_main:
+            print(f"  Merging pre-adapter {i}/{len(pre_adapters)}: {adapter_path}")
+        model = PeftModel.from_pretrained(model, adapter_path)
+        model = model.merge_and_unload()
+
+    return model
+
+
+def apply_checkpoint_adapter(
+    base_model: AutoModelForCausalLM,
+    adapter_path: str,
+    is_main: bool,
+) -> AutoModelForCausalLM:
+    """Load a checkpoint adapter on top of the (already-merged) base, merge,
+    and return the plain model."""
+    if is_main:
+        print(f"  Loading checkpoint adapter: {adapter_path}")
+    model = PeftModel.from_pretrained(base_model, adapter_path)
+    model = model.merge_and_unload()
+    return model
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Prompt preparation
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 def prepare_prompts(dataset, tokenizer) -> tuple[list[str], list[str], list[str]]:
-    """Build tokenizer-formatted prompts and extract ground-truth labels.
-
-    Returns:
-        prompts: list of chat-templated prompt strings
-        answers: list of ground-truth final decisions ("yes" / "no" / "maybe")
-        long_answers: list of ground-truth LONG_ANSWER strings
-    """
+    """Build tokenizer-formatted prompts and extract ground-truth labels."""
     prompts: list[str] = []
     answers: list[str] = []
     long_answers: list[str] = []
@@ -207,7 +254,6 @@ def generate_batch(
             use_cache=True,
         )
 
-    # Slice off the prompt tokens to keep only the generated part.
     prompt_len = inputs["input_ids"].shape[1]
     generated_ids = outputs[:, prompt_len:]
     completions = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
@@ -224,10 +270,7 @@ def score_completions(
     answers: list[str],
     verbose: int = 0,
 ) -> dict:
-    """Compute answer-correctness metrics from raw completion strings.
-
-    Returns a dict with scalar metrics and per-example reward list.
-    """
+    """Compute answer-correctness metrics from raw completion strings."""
     rewards: list[float] = []
     for comp, gt in zip(completions, answers):
         predicted = extract_answer(comp)
@@ -245,7 +288,6 @@ def score_completions(
     answer_tag_rate = has_answer_tag / total if total else 0.0
     long_answer_tag_rate = has_long_answer_tag / total if total else 0.0
 
-    # ── format compliance (both tags) ────────────────────────────────────
     format_compliance = sum(
         1
         for c in completions
@@ -265,65 +307,22 @@ def score_completions(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Single-checkpoint evaluation
+# Single-model evaluation (runs generation + scoring on a ready model)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def evaluate_single(
-    cfg: EvalConfig,
+def evaluate_model(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     accelerator: Accelerator,
-    adapter_path: str | None,
+    cfg: EvalConfig,
+    all_prompts: list[str],
+    all_answers: list[str],
+    all_long_answers: list[str],
+    adapter_label: str,
 ) -> dict | None:
-    """Evaluate one model (base or base+adapter) and return metrics dict.
+    """Run generation + scoring. Returns result dict on main process, None on workers."""
 
-    Only the main process returns a meaningful dict; workers return ``None``.
-    """
-
-    # ── load model ───────────────────────────────────────────────────────
-    if accelerator.is_main_process:
-        print(f"\nLoading model: {cfg.model_name}")
-        if adapter_path:
-            print(f"  Adapter: {adapter_path}")
-        else:
-            print("  Evaluating base model (no adapter)")
-        print(f"  GPUs: {accelerator.num_processes}  |  batch/gpu: {cfg.batch_size}")
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
-
-    base_model = AutoModelForCausalLM.from_pretrained(
-        cfg.model_name,
-        torch_dtype=torch.bfloat16,
-        device_map={"": accelerator.device},
-    )
-
-    if adapter_path:
-        model = PeftModel.from_pretrained(base_model, adapter_path)
-        model = model.merge_and_unload()
-    else:
-        model = base_model
-
-    model.eval()
-
-    # ── load dataset ─────────────────────────────────────────────────────
-    if accelerator.is_main_process:
-        print("Loading PubMedQA test split …")
-
-    dataset = load_dataset(
-        "bigbio/pubmed_qa", trust_remote_code=True, split="validation"
-    )
-
-    if cfg.max_samples is not None:
-        dataset = dataset.select(range(min(cfg.max_samples, len(dataset))))
-
-    if accelerator.is_main_process:
-        print(f"  Test set size: {len(dataset)}")
-
-    all_prompts, all_answers, all_long_answers = prepare_prompts(dataset, tokenizer)
-
-    # ── split across processes ───────────────────────────────────────────
     with accelerator.split_between_processes(
         list(zip(all_prompts, all_answers, all_long_answers))
     ) as split_data:
@@ -331,9 +330,8 @@ def evaluate_single(
         proc_answers = [d[1] for d in split_data]
         proc_long_answers = [d[2] for d in split_data]
 
-    # ── generate ─────────────────────────────────────────────────────────
     if accelerator.is_main_process:
-        print(f"Generating ({len(proc_prompts)} examples on this process) …")
+        print(f"  Generating ({len(proc_prompts)} examples on this process) …")
 
     proc_completions: list[str] = []
     for i in tqdm(
@@ -346,37 +344,30 @@ def evaluate_single(
             generate_batch(model, tokenizer, batch, max_new_tokens=cfg.max_new_tokens)
         )
 
-    # ── gather ───────────────────────────────────────────────────────────
     gathered_completions = accelerator.gather_for_metrics(proc_completions)
     gathered_answers = accelerator.gather_for_metrics(proc_answers)
-    _ = accelerator.gather_for_metrics(proc_long_answers)  # gathered_long_answers
+    _ = accelerator.gather_for_metrics(proc_long_answers)
 
-    # ── score (main process only) ────────────────────────────────────────
     if not accelerator.is_main_process:
-        # Free GPU memory before potentially loading next checkpoint.
-        del model, base_model
-        torch.cuda.empty_cache()
         return None
 
-    metrics = score_completions(
-        gathered_completions, gathered_answers, verbose=cfg.verbose
-    )
+    # ── score ────────────────────────────────────────────────────────────
+    metrics = score_completions(gathered_completions, gathered_answers, verbose=cfg.verbose)
 
-    print("\n" + "=" * 80)
+    print(f"\n{'=' * 80}")
     print("EVALUATION RESULTS")
-    print("=" * 80)
+    print(f"{'=' * 80}")
     print(f"  Model           : {cfg.model_name}")
-    print(f"  Adapter         : {adapter_path or 'None (base model)'}")
+    print(f"  Adapter         : {adapter_label}")
+    if cfg.pre_adapters:
+        print(f"  Pre-adapters    : {cfg.pre_adapters}")
     print(f"  Total examples  : {metrics['total']}")
-    print(
-        f"  Accuracy        : {metrics['accuracy']:.2%} ({metrics['num_correct']}/{metrics['total']})"
-    )
+    print(f"  Accuracy        : {metrics['accuracy']:.2%} ({metrics['num_correct']}/{metrics['total']})")
     print(f"  <answer> rate   : {metrics['answer_tag_rate']:.2%}")
     print(f"  <long_answer>   : {metrics['long_answer_tag_rate']:.2%}")
     print(f"  Format compliant: {metrics['format_compliance_rate']:.2%}")
-    print("=" * 80)
+    print(f"{'=' * 80}")
 
-    # ── sample predictions ───────────────────────────────────────────────
     if cfg.verbose >= 1:
         n_show = min(5, len(gathered_completions))
         print("\nSAMPLE PREDICTIONS")
@@ -391,11 +382,11 @@ def evaluate_single(
             )
             print(f"  Correct      : {metrics['rewards'][i] == 1.0}")
 
-    # ── persist ──────────────────────────────────────────────────────────
     result_record = {
         "config": {
             "model_name": cfg.model_name,
-            "adapter_path": adapter_path,
+            "adapter_path": adapter_label,
+            "pre_adapters": cfg.pre_adapters,
             "num_gpus": accelerator.num_processes,
             "batch_size_per_gpu": cfg.batch_size,
             "effective_batch_size": cfg.batch_size * accelerator.num_processes,
@@ -420,23 +411,14 @@ def evaluate_single(
     if cfg.save_results:
         results_path = Path(cfg.save_results)
         results_path.parent.mkdir(parents=True, exist_ok=True)
-
+        data: list = []
         if results_path.exists():
             with open(results_path, "r") as f:
                 data = json.load(f)
-        else:
-            data = []
-
         data.append(result_record)
-
         with open(results_path, "w") as f:
             json.dump(data, f, indent=2)
-
         print(f"\nResults appended to {cfg.save_results}")
-
-    # Free GPU memory before next checkpoint.
-    del model, base_model
-    torch.cuda.empty_cache()
 
     return result_record
 
@@ -449,36 +431,74 @@ def evaluate_single(
 def main() -> None:
     cfg = tyro.cli(EvalConfig)
     accelerator = Accelerator()
+    is_main = accelerator.is_main_process
 
-    # ── determine which adapters to evaluate ─────────────────────────────
+    if cfg.adapter_path and cfg.adapter_base_path:
+        raise ValueError("Provide --adapter-path (single) or --adapter-base-path (multi), not both.")
+
+    # ── resolve checkpoint list ──────────────────────────────────────────
     if cfg.adapter_base_path is not None:
-        # Multi-checkpoint sweep
-        checkpoints = find_checkpoints(cfg)
-
-        if not checkpoints:
-            if accelerator.is_main_process:
+        adapter_paths = find_checkpoints(cfg)
+        if not adapter_paths:
+            if is_main:
                 print("No checkpoints found matching the given criteria.")
             return
-
-        if accelerator.is_main_process:
-            print(f"Found {len(checkpoints)} checkpoint(s) to evaluate:")
-            for cp in checkpoints:
+        if is_main:
+            print(f"Found {len(adapter_paths)} checkpoint(s) to evaluate:")
+            for cp in adapter_paths:
                 print(f"  • {cp.name}")
-
-        for i, cp in enumerate(checkpoints, 1):
-            if accelerator.is_main_process:
-                print(f"\n[{i}/{len(checkpoints)}] {cp.name}")
-            evaluate_single(cfg, accelerator, adapter_path=str(cp))
-
     elif cfg.adapter_path is not None:
-        # Single adapter
-        evaluate_single(cfg, accelerator, adapter_path=cfg.adapter_path)
-
+        adapter_paths = [Path(cfg.adapter_path)]
     else:
-        # Base model only
-        evaluate_single(cfg, accelerator, adapter_path=None)
+        adapter_paths = []  # base model only
 
-    if accelerator.is_main_process:
+    # ── tokenizer ────────────────────────────────────────────────────────
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    # ── dataset (loaded once) ────────────────────────────────────────────
+    if is_main:
+        print("Loading PubMedQA test split …")
+    dataset = load_dataset("bigbio/pubmed_qa", trust_remote_code=True, split="validation")
+    if cfg.max_samples is not None:
+        dataset = dataset.select(range(min(cfg.max_samples, len(dataset))))
+    all_prompts, all_answers, all_long_answers = prepare_prompts(dataset, tokenizer)
+    if is_main:
+        print(f"  Test set size: {len(all_prompts)}")
+
+    # ── base model + pre-adapters (loaded once) ─────────────────────────
+    base_model = load_base_model_with_pre_adapters(
+        cfg.model_name, cfg.pre_adapters, accelerator.device, is_main,
+    )
+
+    # ── evaluate ─────────────────────────────────────────────────────────
+    if not adapter_paths:
+        base_model.eval()
+        evaluate_model(
+            base_model, tokenizer, accelerator, cfg,
+            all_prompts, all_answers, all_long_answers,
+            adapter_label="None (base model)",
+        )
+    else:
+        for i, cp_path in enumerate(adapter_paths, 1):
+            if is_main:
+                print(f"\n[{i}/{len(adapter_paths)}] {cp_path.name}")
+
+            model = apply_checkpoint_adapter(base_model, str(cp_path), is_main)
+            model.eval()
+
+            evaluate_model(
+                model, tokenizer, accelerator, cfg,
+                all_prompts, all_answers, all_long_answers,
+                adapter_label=str(cp_path),
+            )
+
+            del model
+            torch.cuda.empty_cache()
+
+    if is_main:
         print("\nAll evaluations complete.")
 
 
