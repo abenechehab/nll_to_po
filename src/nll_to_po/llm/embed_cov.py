@@ -318,7 +318,7 @@ def main():
     parser.add_argument(
         "--pooling",
         type=str,
-        default="mean",
+        default="cls",
         choices=["mean", "last", "cls"],
         help="Pooling strategy for embeddings",
     )
@@ -345,7 +345,7 @@ def main():
 
     # Load dataset
     print(f"Loading dataset: {args.dataset_name} ({args.dataset_config})")
-    dataset = load_dataset(args.dataset_name, args.dataset_config)["train"]
+    dataset = load_dataset(args.dataset_name, args.dataset_config, trust_remote_code=True)["train"]
     dataset = dataset.map(lambda x: generate_r1_prompt_answer(x["messages"]))
 
     # Compute embeddings
