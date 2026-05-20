@@ -1,8 +1,8 @@
 <div align="center">
-<h1>From Data to Rewards: a Bi-level Optimization Perspective on Maximum Likelihood Estimation</h1>
+<h1>Bridging SFT and RL: Learning implicit rewards from supervised data</h1>
 
-[![paper](https://img.shields.io/static/v1?label=arXiv&message=2402.03885&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.07624)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-FFD21E?logo=huggingface&logoColor=000)](https://huggingface.co/papers/2510.07624)
+<!-- [![paper](https://img.shields.io/static/v1?label=arXiv&message=2402.03885&color=B31B1B&logo=arXiv)](https://arxiv.org/abs/2510.07624) --> 
+<!-- [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-FFD21E?logo=huggingface&logoColor=000)](https://huggingface.co/papers/2510.07624) --> 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](https://opensource.org/license/MIT)
 [![Python: 3.10](https://img.shields.io/badge/Python-3.12-blue)]()
 
@@ -10,11 +10,16 @@
 
 This repository contains the official implementation of the paper:
 
-   >Abdelhakim Benechehab, Gabriel Singer, Corentin Léger, Youssef Attia El Hili, Giuseppe Paolo, Albert Thomas, Maurizio Filippone, Balázs Kégl.
-   [From Data to Rewards: a Bi-level Optimization Perspective on Maximum Likelihood Estimation](https://arxiv.org/abs/2510.07624).
+   >Abdelhakim Benechehab, Gabriel Singer, Youssef Attia El Hili, Corentin Léger, Giuseppe Paolo, Albert Thomas, Maurizio Filippone, Balázs Kégl.
+   [Bridging SFT and RL: Learning implicit rewards from supervised data]().
 
 ### 📝 Abstract:
-Generative models form the backbone of modern machine learning, underpinning state-of-the-art systems in text, vision, and multimodal applications. While Maximum Likelihood Estimation has traditionally served as the dominant training paradigm, recent work have highlighted its limitations, particularly in generalization and susceptibility to catastrophic forgetting compared to Reinforcement Learning techniques, such as Policy Gradient methods. However, these approaches depend on explicit reward signals, which are often unavailable in practice, leaving open the fundamental problem of how to align generative models when only high-quality datasets are accessible. In this work, we address this challenge via a Bilevel Optimization framework, where the reward function is treated as the optimization variable of an outer-level problem, while a policy gradient objective defines the inner-level. We then conduct a theoretical analysis of this optimization problem in a tractable setting and extract insights that, as we demonstrate, generalize to applications such as tabular classification and model-based reinforcement learning.
+Reinforcement learning (RL) has emerged as a powerful paradigm for adapting large language models (LLM), offering advantages over supervised fine-tuning (SFT) including reduced catastrophic forgetting and improved generalization. However, these benefits require explicit reward signals, often obtained from human preferences or verifiable outcomes, which are unavailable in many cases. We address this gap by introducing a framework that derives reward functions directly from supervised data, enabling RL-based training without additional annotation. Our approach formulates reward learning as a bilevel optimization problem: the outer level optimizes the reward parameters to maximize likelihood on the training data, while the inner level trains a policy via entropy-regularized RL. Theoretical analysis in a tractable Gaussian setting reveals that the optimal reward takes the form of a negative Mahalanobis distance, scaled by the inverse covariance of the target distribution. We extend this insight to language models by defining rewards as distances in a pretrained embedding space. Our experiments on LLM fine-tuning demonstrate that our learned rewards match the performance of oracle RL that have access to ground-truth rewards. Additional results on synthetic data, tabular classification and dynamics modeling further validate the generality of our framework.
+
+Which is an extension of the following [ICLR26 Workshop](https://openreview.net/group?id=ICLR.cc/2026/Workshop/LLM_Reasoning#tab-accept) paper:
+
+   >Abdelhakim Benechehab, Youssef Attia El Hili, Albert Thomas, Giuseppe Paolo, Maurizio Filippone.
+   [Embedding Distance as a Reward Signal can replace Verifiers for LLM Reasoning](https://openreview.net/attachment?id=5P1F5sSFjN&name=pdf).
 
 ## 🚀 Installation
 
@@ -238,6 +243,13 @@ Do not hesitate to contribute to this project by submitting pull requests or iss
 If you use our repository in your work, please cite our paper:
 
 ```bibtex
+@inproceedings{benechehab2026embedding,
+   title={Embedding Distance as a Reward Signal can replace Verifiers for {LLM} Reasoning},
+   author={Abdelhakim Benechehab and Youssef Attia El Hili and Albert Thomas and Giuseppe Paolo and Maurizio Filippone},
+   booktitle={ICLR 2026 Workshop on Logical Reasoning of Large Language Models},
+   year={2026},
+   url={https://openreview.net/forum?id=5P1F5sSFjN}
+}
 @misc{benechehab2025nllpo,
       title={From Data to Rewards: a Bilevel Optimization Perspective on Maximum Likelihood Estimation},
       author={Abdelhakim Benechehab and Gabriel Singer and Corentin Léger and Youssef Attia El Hili and Giuseppe Paolo and Albert Thomas and Maurizio Filippone and Balázs Kégl},
